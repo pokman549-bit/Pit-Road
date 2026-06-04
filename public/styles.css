@@ -1209,7 +1209,8 @@ textarea { min-height: 90px; resize: vertical; font-size: 0.95rem; line-height: 
 }
 .meal-cat-btn:active { opacity: 0.7; }
 
-.nutr-mode-row { display: flex; gap: 6px; margin-bottom: 14px; }
+.nutr-mode-row  { display: flex; gap: 6px; margin-bottom: 14px; }
+.nutr-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 14px; }
 .nutr-mode-btn {
   flex: 1; padding: 9px 4px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface2); color: var(--muted); font-size: 0.68rem; font-weight: 700;

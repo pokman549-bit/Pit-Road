@@ -3270,11 +3270,23 @@ const renderNutritionAdd = () => {
   const fd     = _nutriFormData;
   const isEdit = !!_nutriEntry;
   document.getElementById('nutr-add-content').innerHTML = `
-    ${!isEdit ? `<div class="nutr-mode-row">
+    ${!isEdit ? `<div class="nutr-mode-grid">
       <button class="nutr-mode-btn${_nutriMode==='manual'  ?' active':''}" data-mode="manual"   onclick="selectNutrMode('manual')">✍️ Manual</button>
+      <button class="nutr-mode-btn${_nutriMode==='search'  ?' active':''}" data-mode="search"   onclick="selectNutrMode('search')">🔍 Search</button>
       <button class="nutr-mode-btn${_nutriMode==='label'   ?' active':''}" data-mode="label"    onclick="selectNutrMode('label')">📷 Scan Label</button>
       <button class="nutr-mode-btn${_nutriMode==='estimate'?' active':''}" data-mode="estimate" onclick="selectNutrMode('estimate')">🤔 Photo Guess</button>
     </div>` : ''}
+    <div id="nutr-search-area" style="display:${_nutriMode==='search'&&!isEdit?'block':'none'}">
+      <div class="card mb12" style="padding:14px 16px">
+        <p style="margin-bottom:10px;font-size:0.875rem">Type what you ate — AI looks up the nutrition automatically.</p>
+        <div style="display:flex;gap:8px;align-items:flex-start">
+          <input id="nutr-search-input" type="text" placeholder="e.g. pop tart, 6 pizza rolls, bowl of cereal with milk"
+                 style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();doFoodSearch();}">
+          <button class="btn btn-secondary btn-sm" onclick="doFoodSearch()" style="flex-shrink:0;white-space:nowrap;min-height:44px">Look Up</button>
+        </div>
+        <div id="search-status" style="margin-top:8px;font-size:0.78rem;color:var(--muted)"></div>
+      </div>
+    </div>
     <div id="nutr-scan-area" style="display:${_nutriMode==='label'&&!isEdit?'block':'none'}">
       <div class="card mb12" style="text-align:center;padding:16px">
         <p style="margin-bottom:10px">Point camera at the <strong>Nutrition Facts</strong> label — Claude reads the numbers.</p>
@@ -3440,6 +3452,63 @@ const doPhotoEstimate = async (input) => {
     if (status) status.textContent = `${conf}${obj.notes?' — '+obj.notes:''} Adjust as needed.`;
     _nutriMode = 'estimate';
   } catch { if (status) status.textContent = '❌ Estimate failed — fill in manually.'; toast('Photo estimate failed','err'); }
+};
+
+const doFoodSearch = async () => {
+  const query  = document.getElementById('nutr-search-input')?.value.trim();
+  if (!query) { toast('Type a food first', 'err'); return; }
+  const status = document.getElementById('search-status');
+  if (status) status.textContent = '🔍 Looking up nutrition info…';
+
+  try {
+    const raw = await callClaude(
+      `You are a nutrition database. Provide accurate nutritional info for: "${query}"
+
+Return ONLY valid JSON (no markdown):
+{
+  "name": "standardized food name",
+  "serving_size": "single serving description e.g. '1 pastry (52g)'",
+  "servings": number (how many the user described — e.g. '2 pop tarts' → 2, 'a bowl of cereal' → 1),
+  "calories": number per 1 serving,
+  "protein_g": number,
+  "carbs_g": number,
+  "fat_g": number,
+  "fiber_g": number,
+  "sodium_mg": number,
+  "confidence": "high" | "medium" | "low"
+}
+
+Confidence: high = packaged/branded food with known label data, medium = restaurant/generic item, low = vague or ambiguous.
+Use real label data for well-known packaged foods (Pop-Tarts, Pizza Rolls, etc.). Per-serving values only.`,
+      500
+    );
+
+    const text = raw.content[0].text;
+    const obj  = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+
+    document.getElementById('nf-name').value     = obj.name         || query;
+    document.getElementById('nf-cal').value      = obj.calories     || 0;
+    document.getElementById('nf-pro').value      = obj.protein_g    || 0;
+    document.getElementById('nf-carb').value     = obj.carbs_g      || 0;
+    document.getElementById('nf-fat').value      = obj.fat_g        || 0;
+    document.getElementById('nf-fiber').value    = obj.fiber_g      || 0;
+    document.getElementById('nf-sod').value      = obj.sodium_mg    || 0;
+    document.getElementById('nf-size').value     = obj.serving_size || '1 serving';
+    document.getElementById('nf-servings').value = obj.servings     || 1;
+
+    const confText = {
+      high:   '✅ High confidence — review and save',
+      medium: '⚠️ Medium confidence — verify if you can',
+      low:    '⚠️ Low confidence — rough estimate, adjust if needed',
+    }[obj.confidence] || '⚠️ Estimate — review before saving';
+    if (status) status.textContent = confText;
+
+    _nutriMode = 'search';
+    updateNutrTotals();
+  } catch (err) {
+    if (status) status.textContent = '❌ Lookup failed — try manual entry.';
+    toast('Food search failed', 'err');
+  }
 };
 
 const setNutrReviewScope = (scope) => {
