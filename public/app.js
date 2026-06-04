@@ -63,6 +63,13 @@ const DB = {
     DB._w('workouts', DB.getWorkouts().filter(w => w.id !== id));
   },
 
+  getRestDays:   ()  => DB._r('restdays') || [],
+  addRestDay:    (d) => {
+    const a = DB.getRestDays();
+    if (!a.includes(d)) { a.push(d); DB._w('restdays', a); }
+  },
+  removeRestDay: (d) => DB._w('restdays', DB.getRestDays().filter(x => x !== d)),
+
   getNutriDay:      (date)    => DB._r('nutriday_' + date) || [],
   saveNutriDay:     (date, e) => DB._w('nutriday_' + date, e),
   getNutriTargets:  ()        => DB._r('nutri_targets') || { calories: 3500, protein: 220, carbs: 450, fat: 100, fiber: 40, sodium: 3500 },
@@ -115,10 +122,11 @@ const daysSince = (dateStr) => {
   return Math.floor((Date.now() - new Date(dateStr + 'T12:00:00').getTime()) / 86400000);
 };
 
-const calcStreak = (workouts) => {
-  if (!workouts.length) return { current: 0, longest: 0 };
-  const dates = new Set(workouts.map(w => w.date));
-  const sorted = [...dates].sort();
+const calcStreak = (workouts, restDays = []) => {
+  // Active dates = workouts + intentional rest days (both keep streak alive)
+  const active = new Set([...workouts.map(w => w.date), ...restDays]);
+  if (!active.size) return { current: 0, longest: 0 };
+  const sorted = [...active].sort();
   let longest = 1, run = 1;
   for (let i = 1; i < sorted.length; i++) {
     const diff = (new Date(sorted[i] + 'T12:00:00') - new Date(sorted[i-1] + 'T12:00:00')) / 86400000;
@@ -128,9 +136,9 @@ const calcStreak = (workouts) => {
   const todayStr = today();
   const yestStr  = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   let current = 0;
-  if (dates.has(todayStr) || dates.has(yestStr)) {
-    let d = new Date((dates.has(todayStr) ? todayStr : yestStr) + 'T12:00:00');
-    while (dates.has(d.toISOString().slice(0, 10))) {
+  if (active.has(todayStr) || active.has(yestStr)) {
+    let d = new Date((active.has(todayStr) ? todayStr : yestStr) + 'T12:00:00');
+    while (active.has(d.toISOString().slice(0, 10))) {
       current++;
       d = new Date(d.getTime() - 86400000);
     }
@@ -187,6 +195,44 @@ const wizardSkip = () => {
   renderDashboard();
   show('screen-home');
 };
+
+// ================================================================
+// REST DAY LOGGING
+// ================================================================
+const logRestDay = () => {
+  const todayStr = today();
+  if (DB.getWorkouts().some(w => w.date === todayStr)) {
+    toast('You already logged a workout today', 'err');
+    return;
+  }
+  DB.addRestDay(todayStr);
+  toast('Rest day logged — streak protected 🛌', 'ok');
+  renderDashboard();
+};
+
+const cancelRestDay = (dateStr) => {
+  DB.removeRestDay(dateStr);
+  toast('Rest day removed', 'ok');
+  renderDashboard();
+  // If day view is open for this date, refresh it
+  const detailEl = document.getElementById('screen-detail');
+  if (detailEl && detailEl.classList.contains('active')) openDayView(dateStr);
+};
+
+const buildRestDayCardHtml = () => `
+  <div class="card today-card" style="margin-bottom:8px;border-color:rgba(255,255,255,0.12)">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div style="flex:1;min-width:0">
+        <div class="today-session-tag" style="color:var(--muted)">REST DAY · TODAY</div>
+        <div class="today-session-name">Recovery logged ✓</div>
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:6px">Streak protected — come back strong</div>
+      </div>
+      <div style="font-size:1.6rem;flex-shrink:0">🛌</div>
+    </div>
+  </div>
+  <button class="btn btn-ghost btn-sm" style="width:100%;margin-bottom:12px;font-size:0.8rem;opacity:0.55"
+          onclick="cancelRestDay('${today()}')">✕ Remove rest day</button>
+`;
 
 // ================================================================
 // MILESTONE CELEBRATIONS
@@ -360,15 +406,30 @@ const wizNext = {
 // DASHBOARD
 // ================================================================
 const renderDashboard = () => {
-  const baseline = DB.getLatestBaseline();
-  const workouts = DB.getWorkouts().slice().reverse();
-  const lastOut  = workouts[0];
-  const phase    = determinePhase(DB.getWorkouts());
-  const { current: streakCur, longest: streakBest } = calcStreak(DB.getWorkouts());
+  const baseline  = DB.getLatestBaseline();
+  const workouts  = DB.getWorkouts().slice().reverse();
+  const lastOut   = workouts[0];
+  const phase     = determinePhase(DB.getWorkouts());
+  const restDays  = DB.getRestDays();
+  const { current: streakCur, longest: streakBest } = calcStreak(DB.getWorkouts(), restDays);
 
-  // Today card
+  // Today card — show rest-day state if logged, or add "Log Rest Day" button if not
   const todayEl = document.getElementById('dash-today');
-  if (todayEl) todayEl.innerHTML = buildTodayCardHtml();
+  if (todayEl) {
+    const hasWorkoutToday = DB.getWorkouts().some(w => w.date === today());
+    const hasRestToday    = restDays.includes(today());
+    if (hasRestToday && !hasWorkoutToday) {
+      todayEl.innerHTML = buildRestDayCardHtml();
+    } else {
+      let todayHtml = buildTodayCardHtml();
+      if (!hasWorkoutToday) {
+        todayHtml += `<button class="btn btn-ghost btn-sm"
+          style="width:100%;margin-bottom:12px;font-size:0.82rem;opacity:0.6;touch-action:manipulation"
+          onclick="logRestDay()">🛌 Log as Rest Day</button>`;
+      }
+      todayEl.innerHTML = todayHtml;
+    }
+  }
 
   // Stat pills — streak inline so no separate card needed
   document.getElementById('dash-stats').innerHTML = `
@@ -850,6 +911,26 @@ const openDayView = (dateStr) => {
       </div>`;
   }
 
+  // ── Rest day section ──
+  const isRestDay = DB.getRestDays().includes(dateStr);
+  if (isRestDay) {
+    html += `
+      <div class="day-section-head">🛌 Rest Day</div>
+      <div class="card mb12" style="display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:0.9rem;font-weight:600;color:var(--muted)">Intentional rest — streak protected</div>
+        <button class="btn btn-ghost btn-sm" style="font-size:0.75rem;opacity:0.6;flex-shrink:0;margin-left:12px"
+                onclick="cancelRestDay('${dateStr}')">Remove</button>
+      </div>`;
+  } else if (!w) {
+    // Only show "Log Rest Day" option on past days that have no workout
+    const isPast = dateStr < today();
+    if (isPast) {
+      html += `<button class="btn btn-ghost btn-sm" style="width:100%;margin-top:8px;opacity:0.6"
+        onclick="DB.addRestDay('${dateStr}');toast('Rest day logged 🛌','ok');openDayView('${dateStr}');renderDashboard()">
+        🛌 Mark as Rest Day</button>`;
+    }
+  }
+
   if (!html) html = `<div class="empty mt24"><div class="empty-icon">📅</div><p>Nothing logged for this day.</p></div>`;
 
   document.getElementById('detail-content').innerHTML = html;
@@ -862,10 +943,12 @@ const openDayView = (dateStr) => {
 // ================================================================
 const buildStreakHtml = (current, longest) => {
   const wDates = new Set(DB.getWorkouts().map(w => w.date));
+  const rDates = new Set(DB.getRestDays());
   let last7 = 0;
   for (let i = 0; i < 7; i++) {
     const d = new Date(); d.setDate(d.getDate() - i);
-    if (wDates.has(d.toISOString().slice(0, 10))) last7++;
+    const ds = d.toISOString().slice(0, 10);
+    if (wDates.has(ds) || rDates.has(ds)) last7++;
   }
   return `
   <div class="streak-card">
@@ -907,6 +990,7 @@ const buildCalendarHtml = (workouts, year, month) => {
   const workoutDates = {};
   workouts.forEach(w => { if (!workoutDates[w.date]) workoutDates[w.date] = w; });
   const sleepDates = new Set(DB.getSleepLogs().map(s => s.date));
+  const restDates  = new Set(DB.getRestDays());
 
   const firstDay   = new Date(year, month, 1);
   const lastDate   = new Date(year, month + 1, 0).getDate();
@@ -919,16 +1003,21 @@ const buildCalendarHtml = (workouts, year, month) => {
   for (let i = 0; i < firstDay.getDay(); i++) cells += `<div class="cal-day cal-blank"></div>`;
 
   for (let d = 1; d <= lastDate; d++) {
-    const ds      = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const w       = workoutDates[ds];
-    const hasSleep  = sleepDates.has(ds);
-    const hasNutr   = DB.getNutriDay(ds).length > 0;
-    const hasData   = !!(w || hasSleep || hasNutr);
-    const cls = ['cal-day', w ? 'has-workout' : (hasData ? 'has-data' : ''), ds === todayStr ? 'cal-today' : ''].filter(Boolean).join(' ');
+    const ds       = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const w        = workoutDates[ds];
+    const hasSleep = sleepDates.has(ds);
+    const hasNutr  = DB.getNutriDay(ds).length > 0;
+    const hasRest  = restDates.has(ds);
+    const hasData  = !!(w || hasSleep || hasNutr || hasRest);
+    const cls = ['cal-day',
+      w       ? 'has-workout' : hasRest ? 'has-rest' : (hasData ? 'has-data' : ''),
+      ds === todayStr ? 'cal-today' : '',
+    ].filter(Boolean).join(' ');
     const dots = [
-      w      ? '<div class="cal-dot workout-dot"></div>' : '',
-      hasNutr ? '<div class="cal-dot nutr-dot"></div>'   : '',
-      hasSleep? '<div class="cal-dot sleep-dot"></div>'  : '',
+      w        ? '<div class="cal-dot workout-dot"></div>' : '',
+      hasNutr  ? '<div class="cal-dot nutr-dot"></div>'    : '',
+      hasSleep ? '<div class="cal-dot sleep-dot"></div>'   : '',
+      hasRest  ? '<div class="cal-dot rest-dot"></div>'    : '',
     ].join('');
     cells += `<div class="${cls}"${hasData ? ` onclick="openDayView('${ds}')"` : ''}>${d}${dots ? `<div class="cal-dots">${dots}</div>` : ''}</div>`;
   }

@@ -1352,8 +1352,11 @@ textarea { min-height: 90px; resize: vertical; font-size: 0.95rem; line-height: 
 .workout-dot { background: var(--red); }
 .nutr-dot    { background: var(--green); }
 .sleep-dot   { background: var(--gold); }
+.rest-dot    { background: rgba(255,255,255,0.3); }
 .has-data { cursor: pointer; opacity: 0.85; }
 .has-data:active { opacity: 0.6; }
+.cal-day.has-rest { cursor: pointer; opacity: 0.75; }
+.cal-day.has-rest:active { opacity: 0.5; }
 
 /* ── Unified Day View ───────────────────────────────────────────── */
 .day-section-head {
