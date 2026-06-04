@@ -59,6 +59,9 @@ const DB = {
     const i = a.findIndex(w => w.id === id);
     if (i >= 0) { a[i] = Object.assign({}, a[i], patch); DB._w('workouts', a); }
   },
+  deleteWorkout:(id) => {
+    DB._w('workouts', DB.getWorkouts().filter(w => w.id !== id));
+  },
 
   getNutriDay:      (date)    => DB._r('nutriday_' + date) || [],
   saveNutriDay:     (date, e) => DB._w('nutriday_' + date, e),
@@ -178,6 +181,12 @@ const wizardGo = (step) => {
 };
 
 const wizardStart = () => { _bdata = {}; wizardGo(0); show('screen-wizard'); };
+
+const wizardSkip = () => {
+  DB.completeSetup();   // mark first-launch done so wizard never re-forces
+  renderDashboard();
+  show('screen-home');
+};
 
 // ================================================================
 // MILESTONE CELEBRATIONS
@@ -458,6 +467,7 @@ const workoutRowHtml = (w) => {
 // ================================================================
 let _exercises       = [];
 let _currentGenerated = null;  // holds the AI-generated workout if coming from Train screen
+let _detailId        = null;   // id of the workout currently shown in screen-detail
 
 const openLogScreen = () => {
   _exercises = [];
@@ -572,6 +582,7 @@ const saveWorkout = () => {
 const openWorkoutDetail = (id) => {
   const w = DB.getWorkout(id);
   if (!w) return;
+  _detailId = id;
 
   const gymClass = w.gym === 'UNOH' ? 'unoh' : w.gym === 'Planet Fitness' ? 'pf' : 'other';
   const gymShort = w.gym === 'UNOH' ? 'UNOH' : w.gym === 'Planet Fitness' ? 'PF' : (w.gym || '?');
@@ -610,9 +621,154 @@ const openWorkoutDetail = (id) => {
     html += `<div class="card mb12"><div class="card-label">Notes</div><p style="color:var(--text);font-size:0.875rem;line-height:1.6">${w.notes}</p></div>`;
   }
 
+  html += `
+    <div class="btn-row mt8 mb24">
+      <button class="btn btn-ghost" onclick="editWorkout('${id}')">✏️ Edit</button>
+      <button class="btn btn-ghost" style="color:#e05555" onclick="deleteWorkoutConfirm('${id}')">🗑 Delete</button>
+    </div>
+  `;
+
   document.getElementById('detail-content').innerHTML = html;
   document.getElementById('detail-header-date').textContent = fmtDate(w.date);
   show('screen-detail');
+};
+
+// ================================================================
+// WORKOUT EDIT / DELETE
+// ================================================================
+
+const deleteWorkoutConfirm = (id) => {
+  if (!confirm('Delete this workout permanently? This cannot be undone.')) return;
+  DB.deleteWorkout(id);
+  _detailId = null;
+  toast('Workout deleted', 'ok');
+  renderDashboard();
+  show('screen-home');
+};
+
+// Build one editable set row (used by editWorkout and addEditSet)
+const buildEditSetRow = (s, si) => `
+  <div class="edit-set-row">
+    <span class="set-id" style="min-width:48px">Set ${si + 1}</span>
+    <input type="number" class="set-input edit-set-wt" value="${s.weight || ''}" placeholder="lbs" inputmode="decimal" style="width:72px">
+    <span style="color:var(--muted);font-size:0.85rem;padding:0 2px">×</span>
+    <input type="number" class="set-input edit-set-reps" value="${s.reps || ''}" placeholder="reps" inputmode="numeric" style="width:60px">
+    <button class="icon-btn" onclick="removeEditSet(this)" style="margin-left:4px">−</button>
+  </div>
+`;
+
+// Build one editable exercise block
+const buildEditExBlock = (ex) => {
+  const safeName = (ex.name || '').replace(/"/g, '&quot;');
+  return `
+    <div class="card mb12 edit-ex">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <input type="text" class="edit-ex-name" value="${safeName}" placeholder="Exercise name"
+               style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-size:0.9rem;font-weight:600">
+        <button class="icon-btn" onclick="removeEditExercise(this)" style="font-size:1rem">✕</button>
+      </div>
+      <div class="edit-sets-list">
+        ${(ex.sets || []).map((s, si) => buildEditSetRow(s, si)).join('')}
+      </div>
+      <button class="btn btn-ghost btn-sm mt8" style="font-size:0.78rem;padding:6px 12px" onclick="addEditSet(this)">+ Add Set</button>
+    </div>
+  `;
+};
+
+const editWorkout = (id) => {
+  const w = DB.getWorkout(id);
+  if (!w) return;
+  _detailId = id;
+
+  const exHtml = (w.exercises || []).map(ex => buildEditExBlock(ex)).join('');
+
+  document.getElementById('detail-content').innerHTML = `
+    <div class="card mb12">
+      <div class="card-label">Session Details</div>
+      <div class="form-group">
+        <label>Duration (min)</label>
+        <input id="edit-duration" type="number" value="${w.duration || ''}" inputmode="numeric" min="1" max="300" placeholder="e.g. 60">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label>Energy Level</label>
+        <select id="edit-energy">
+          <option value="">—</option>
+          <option value="low"    ${w.energy === 'low'    ? 'selected' : ''}>Low</option>
+          <option value="medium" ${w.energy === 'medium' ? 'selected' : ''}>Medium</option>
+          <option value="high"   ${w.energy === 'high'   ? 'selected' : ''}>High</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="edit-exercises">${exHtml}</div>
+
+    <button class="btn btn-secondary mb12" style="width:100%" onclick="addEditExercise()">+ Add Exercise</button>
+
+    <div class="card mb12">
+      <div class="form-group" style="margin-bottom:0">
+        <label>Notes</label>
+        <textarea id="edit-notes" rows="3" placeholder="How did it go?">${w.notes || ''}</textarea>
+      </div>
+    </div>
+
+    <div class="btn-row mt8 mb24">
+      <button class="btn btn-ghost" onclick="openWorkoutDetail('${id}')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveWorkoutEdit('${id}')">Save Changes</button>
+    </div>
+  `;
+  document.getElementById('detail-header-date').textContent = 'Edit · ' + fmtDate(w.date);
+};
+
+const addEditSet = (btn) => {
+  const exDiv = btn.closest('.edit-ex');
+  const list  = exDiv.querySelector('.edit-sets-list');
+  const si    = list.querySelectorAll('.edit-set-row').length;
+  list.insertAdjacentHTML('beforeend', buildEditSetRow({ weight: '', reps: '' }, si));
+};
+
+const removeEditSet = (btn) => {
+  const list = btn.closest('.edit-sets-list');
+  if (list && list.querySelectorAll('.edit-set-row').length <= 1) {
+    toast('Each exercise needs at least one set', 'err');
+    return;
+  }
+  btn.closest('.edit-set-row').remove();
+  // Re-number remaining set labels
+  btn.closest('.edit-sets-list')?.querySelectorAll('.edit-set-row').forEach((row, i) => {
+    const lbl = row.querySelector('.set-id');
+    if (lbl) lbl.textContent = 'Set ' + (i + 1);
+  });
+};
+
+const addEditExercise = () => {
+  document.getElementById('edit-exercises')
+    .insertAdjacentHTML('beforeend', buildEditExBlock({ name: '', sets: [{ weight: '', reps: '' }] }));
+};
+
+const removeEditExercise = (btn) => {
+  const exDivs = document.querySelectorAll('.edit-ex');
+  if (exDivs.length <= 1) { toast('Workout must have at least one exercise', 'err'); return; }
+  btn.closest('.edit-ex').remove();
+};
+
+const saveWorkoutEdit = (id) => {
+  const exercises = Array.from(document.querySelectorAll('.edit-ex')).map(exDiv => ({
+    name: exDiv.querySelector('.edit-ex-name').value.trim(),
+    sets: Array.from(exDiv.querySelectorAll('.edit-set-row')).map(row => ({
+      weight: parseFloat(row.querySelector('.edit-set-wt').value)  || 0,
+      reps:   parseInt(row.querySelector('.edit-set-reps').value) || 0,
+    })).filter(s => s.reps > 0),
+  })).filter(ex => ex.name && ex.sets.length > 0);
+
+  if (!exercises.length) { toast('Add at least one exercise with reps', 'err'); return; }
+
+  const duration = parseInt(document.getElementById('edit-duration').value) || null;
+  const energy   = document.getElementById('edit-energy').value || null;
+  const notes    = document.getElementById('edit-notes').value.trim();
+
+  DB.updateWorkout(id, { exercises, duration, energy, notes });
+  toast('Workout updated ✓', 'ok');
+  openWorkoutDetail(id);
 };
 
 // ================================================================
@@ -627,6 +783,7 @@ const openDayView = (dateStr) => {
 
   // ── Workout section ──
   if (w) {
+    _detailId = w.id;
     const gymClass = w.gym === 'UNOH' ? 'unoh' : w.gym === 'Planet Fitness' ? 'pf' : 'other';
     const gymShort = w.gym === 'UNOH' ? 'UNOH' : w.gym === 'Planet Fitness' ? 'PF' : (w.gym || '?');
     html += `
@@ -652,6 +809,10 @@ const openDayView = (dateStr) => {
       }).join('');
     }
     if (w.notes) html += `<div class="card mb12"><div class="card-label">Notes</div><p style="color:var(--text);font-size:0.875rem;line-height:1.6">${w.notes}</p></div>`;
+    html += `<div class="btn-row mt4 mb12">
+      <button class="btn btn-ghost btn-sm" onclick="editWorkout('${w.id}')">✏️ Edit Workout</button>
+      <button class="btn btn-ghost btn-sm" style="color:#e05555" onclick="deleteWorkoutConfirm('${w.id}')">🗑 Delete</button>
+    </div>`;
   }
 
   // ── Nutrition section ──
@@ -1510,6 +1671,12 @@ const getBLHistory = (field) =>
     .sort((a, b) => a.x.localeCompare(b.x));
 
 const renderProgressScreen = () => {
+  try { _renderProgressScreen(); } catch(e) {
+    console.error('Progress error:', e);
+    toast('Progress error: ' + e.message, 'err');
+  }
+};
+const _renderProgressScreen = () => {
   const el = document.getElementById('progress-content');
   if (!el) return;
 
@@ -2750,6 +2917,7 @@ const buildApp = () => `
       </div>
       <p style="margin-bottom:20px">Tests: 10-yd sprint · Broad jump · Pro agility · Main lift · Bodyweight</p>
       <button class="btn btn-primary" onclick="wizardGo(1)">Let's Go →</button>
+      <button class="btn btn-ghost mt8" onclick="wizardSkip()" style="opacity:0.6;font-size:0.85rem">Skip for now — go straight to app</button>
     </div>
 
     <div class="wizard-step wizard-body" data-s="1">
