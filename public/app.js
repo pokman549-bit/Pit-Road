@@ -256,50 +256,27 @@ const buildTodayCardHtml = () => {
   };
   const sessionLabel = typeLabels[nextType] || 'Next Session';
 
-  const entries    = DB.getNutriDay(today());
-  const targets    = DB.getNutriTargets();
-  const tots       = entries.length
-    ? entries.reduce((t, e) => ({
-        cal:  t.cal  + Math.round((e.perServing?.calories || 0) * e.servings),
-        prot: t.prot + Math.round((e.perServing?.protein  || 0) * e.servings),
-      }), { cal: 0, prot: 0 })
-    : null;
-  const calPct  = tots ? Math.min(100, Math.round(tots.cal  / (targets.calories || 3500) * 100)) : 0;
-  const protPct = tots ? Math.min(100, Math.round(tots.prot / (targets.protein  || 220)  * 100)) : 0;
-
   const latestSleep = DB.getLatestSleepLog();
-  let recoveryHtml = '';
-  if (latestSleep) {
-    const r = latestSleep.recovery || latestSleep.sleepQuality;
-    const color = r >= 70 ? 'var(--green)' : r >= 50 ? '#f5a623' : 'var(--red)';
-    const label = latestSleep.recovery
-      ? `Recovery ${latestSleep.recovery}%`
-      : latestSleep.sleepDuration ? `${latestSleep.sleepDuration}h sleep` : 'Recovery logged';
-    recoveryHtml = `<span class="today-recovery-badge" style="color:${color}">● ${label}</span>`;
-  }
+  const level = calcRecoveryLevel(latestSleep);
+  const levelColor = { poor:'#e63946', moderate:'#f5a623', good:'var(--green)', excellent:'var(--red)' }[level] || 'var(--muted)';
+  const levelText  = { poor:'⚠ Low recovery — lighter session today', moderate:'→ Moderate recovery', good:'✓ Good recovery', excellent:'💪 Excellent — push hard today' }[level];
+  const sleepFallback = !level && latestSleep?.sleepDuration ? `● ${latestSleep.sleepDuration}h sleep` : null;
+  const recoveryHtml = levelText
+    ? `<div style="font-size:0.78rem;font-weight:600;color:${levelColor};margin-top:6px">${levelText}</div>`
+    : sleepFallback
+      ? `<div style="font-size:0.78rem;color:var(--muted);margin-top:6px">${sleepFallback}</div>`
+      : '';
 
   return `
-    <div class="card today-card">
-      <div class="today-top">
-        <div>
-          <div class="today-session-tag">PH${phase}-${nextType} · UP NEXT</div>
+    <div class="card today-card" onclick="openTrainScreen()"
+         style="cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div class="today-session-tag">PH${phase}-${nextType} &middot; UP NEXT</div>
           <div class="today-session-name">${sessionLabel}</div>
           ${recoveryHtml}
         </div>
-        <button class="btn btn-primary btn-sm" onclick="openTrainScreen()" style="flex-shrink:0;align-self:flex-start">Train</button>
-      </div>
-      <div class="today-nutr">
-        <div class="today-nutr-label">Today's Fuel</div>
-        <div class="today-bar-row">
-          <span class="today-bar-name">Cal</span>
-          <div class="today-bar-track"><div class="today-bar-fill" style="width:${calPct}%"></div></div>
-          <span class="today-bar-val">${tots ? tots.cal : 0}<span style="color:var(--muted);font-weight:400">/${targets.calories}</span></span>
-        </div>
-        <div class="today-bar-row">
-          <span class="today-bar-name">Pro</span>
-          <div class="today-bar-track"><div class="today-bar-fill pro" style="width:${protPct}%"></div></div>
-          <span class="today-bar-val">${tots ? tots.prot : 0}g<span style="color:var(--muted);font-weight:400">/${targets.protein}g</span></span>
-        </div>
+        <div style="color:var(--red);font-size:1.6rem;font-weight:200;flex-shrink:0;opacity:0.8">›</div>
       </div>
     </div>`;
 };
@@ -378,100 +355,83 @@ const renderDashboard = () => {
   const workouts = DB.getWorkouts().slice().reverse();
   const lastOut  = workouts[0];
   const phase    = determinePhase(DB.getWorkouts());
+  const { current: streakCur, longest: streakBest } = calcStreak(DB.getWorkouts());
 
+  // Today card
   const todayEl = document.getElementById('dash-today');
   if (todayEl) todayEl.innerHTML = buildTodayCardHtml();
 
-  const { current: streakCur, longest: streakBest } = calcStreak(DB.getWorkouts());
+  // Stat pills — streak inline so no separate card needed
   document.getElementById('dash-stats').innerHTML = `
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-      <div class="stat-pill">Sessions <span class="pill-val">${workouts.length}</span></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      <div class="stat-pill">🔥 <span class="pill-val">${streakCur}</span> streak${streakBest > 0 ? `<span style="color:var(--muted);font-weight:400"> / ${streakBest} best</span>` : ''}</div>
       <div class="stat-pill">Phase <span class="pill-val">${phase}</span></div>
+      <div class="stat-pill">Sessions <span class="pill-val">${workouts.length}</span></div>
       ${lastOut ? `<div class="stat-pill">Last <span class="pill-val">${daysSince(lastOut.date) === 0 ? 'today' : daysSince(lastOut.date) + 'd ago'}</span></div>` : ''}
     </div>
   `;
-  document.getElementById('dash-streak').innerHTML = buildStreakHtml(streakCur, streakBest);
 
-  let metricsHtml = '';
+  // ── Compact summary card ──────────────────────────────────────────
+  // Baselines row
+  let blVal = 'No baseline yet — tap to run test';
   if (baseline) {
-    const jump = baseline.jumpFt !== undefined ? fmtJump(baseline.jumpFt, baseline.jumpIn) : '—';
-    metricsHtml = `
-      <div class="section-head" style="padding:0;margin-bottom:10px">
-        <h3>Baselines</h3>
-        <span class="section-action" onclick="wizardStart()">Re-test</span>
-      </div>
-      <div class="metric-grid">
-        <div class="metric-tile"><div class="metric-val">${baseline.sprint ? baseline.sprint + 's' : '—'}</div><div class="metric-name">10-Yard Sprint</div><div class="metric-sub">target &lt;1.9s</div></div>
-        <div class="metric-tile"><div class="metric-val">${jump}</div><div class="metric-name">Broad Jump</div><div class="metric-sub">target 8.5+ ft</div></div>
-        <div class="metric-tile"><div class="metric-val">${baseline.agility ? baseline.agility + 's' : '—'}</div><div class="metric-name">Pro Agility</div><div class="metric-sub">target &lt;4.7s</div></div>
-        <div class="metric-tile"><div class="metric-val">${baseline.estimated1RM ? baseline.estimated1RM + ' lbs' : '—'}</div><div class="metric-name">Est. 1RM</div><div class="metric-sub">target 2× BW</div></div>
-      </div>
-    `;
-  } else {
-    metricsHtml = `
-      <div class="empty mt12">
-        <div class="empty-icon">📊</div>
-        <p>No baseline yet. Run your baseline test to track progress against elite benchmarks.</p>
-        <button class="btn btn-primary btn-sm mt16" style="max-width:240px;margin:16px auto 0" onclick="wizardStart()">Run Baseline Test</button>
-      </div>
-    `;
+    const jump = baseline.jumpFt !== undefined ? fmtJump(baseline.jumpFt, baseline.jumpIn) : null;
+    blVal = [
+      baseline.sprint    ? baseline.sprint + 's sprint'  : null,
+      jump               ? jump + ' jump'                : null,
+      baseline.agility   ? baseline.agility + 's agility': null,
+      baseline.estimated1RM ? baseline.estimated1RM + ' lbs 1RM' : null,
+    ].filter(Boolean).join(' · ');
   }
 
-  document.getElementById('dash-metrics').innerHTML  = metricsHtml;
+  // Body row
+  const body = DB.getLatestBodyLog();
+  let bodyVal = 'No check-in yet — tap to log';
+  let bodyColor = 'var(--muted)';
+  if (body) {
+    bodyVal = [
+      body.weight      ? body.weight + ' lbs'         : null,
+      body.bodyFat     ? body.bodyFat + '% BF'        : null,
+      body.muscleMass  ? body.muscleMass + ' lbs muscle' : null,
+      body.visceralFat ? 'VF ' + body.visceralFat     : null,
+    ].filter(Boolean).join(' · ');
+    bodyColor = 'var(--text)';
+  }
 
-  // Body composition card
-  const latestBody = DB.getLatestBodyLog();
-  const bodyHtml = latestBody ? `
-    <div class="section-head" style="padding:0;margin-top:16px;margin-bottom:10px">
-      <h3>Body Composition</h3>
-      <span class="section-action" onclick="openBodyLog()">Log Today</span>
-    </div>
-    <div class="card">
-      <div style="font-size:0.68rem;color:var(--muted);margin-bottom:10px">${fmtDate(latestBody.date)}${latestBody.source === 'ai_scan' ? ' · AI scan' : ''}</div>
-      <div class="metric-grid">
-        ${latestBody.weight     ? `<div class="metric-tile"><div class="metric-val">${latestBody.weight}</div><div class="metric-name">Weight (lbs)</div><div class="metric-sub">target 240–255</div></div>` : ''}
-        ${latestBody.bodyFat    ? `<div class="metric-tile"><div class="metric-val">${latestBody.bodyFat}%</div><div class="metric-name">Body Fat</div></div>` : ''}
-        ${latestBody.muscleMass ? `<div class="metric-tile"><div class="metric-val">${latestBody.muscleMass}</div><div class="metric-name">Muscle (lbs)</div></div>` : ''}
-        ${latestBody.visceralFat ? `<div class="metric-tile"><div class="metric-val">${latestBody.visceralFat}</div><div class="metric-name">Visceral Fat</div></div>` : ''}
-      </div>
-    </div>` : `
-    <div class="section-head" style="padding:0;margin-top:16px;margin-bottom:10px">
-      <h3>Body Composition</h3>
-    </div>
-    <div class="card" style="text-align:center;padding:20px">
-      <div style="font-size:2.2rem;margin-bottom:8px">⚖️</div>
-      <p style="margin-bottom:14px">No body data yet. Scan your Starfit screenshot to log all your measurements automatically.</p>
-      <button class="btn btn-primary btn-sm" style="max-width:240px;margin:0 auto" onclick="openBodyLog()">Log First Check-In</button>
-    </div>`;
-  document.getElementById('dash-body').innerHTML = bodyHtml;
+  // Sleep row
+  const sleep = DB.getLatestSleepLog();
+  const sleepLevel = calcRecoveryLevel(sleep);
+  const sleepLevelColor = { poor:'#e63946', moderate:'#f5a623', good:'var(--green)', excellent:'var(--red)' }[sleepLevel] || 'var(--muted)';
+  let sleepVal = 'Not logged — tap to log tonight';
+  let sleepColor = 'var(--muted)';
+  if (sleep) {
+    sleepVal = [
+      sleep.sleepDuration ? sleep.sleepDuration + 'h sleep' : null,
+      sleep.recovery      ? 'Recovery ' + sleep.recovery    : sleep.sleepQuality ? 'Quality ' + sleep.sleepQuality : null,
+      sleep.feelRating    ? 'Feel ' + sleep.feelRating + '/10' : null,
+    ].filter(Boolean).join(' · ');
+    sleepColor = sleepLevel ? sleepLevelColor : 'var(--text)';
+  }
 
-  // Sleep & Recovery card
-  const latestSleep = DB.getLatestSleepLog();
-  const todaySleep  = DB.getTodaySleepLog();
-  const sleepDashHtml = latestSleep ? `
-    <div class="section-head" style="padding:0;margin-top:16px;margin-bottom:10px">
-      <h3>Sleep & Recovery</h3>
-      <span class="section-action" onclick="openSleepLog()">${todaySleep ? 'Update' : 'Log Today'}</span>
-    </div>
-    <div class="card">
-      <div style="font-size:0.65rem;font-weight:700;margin-bottom:8px;color:${todaySleep ? 'var(--green)' : 'var(--muted)'}">${todaySleep ? '✓ LOGGED TODAY' : fmtDate(latestSleep.date)}</div>
-      <div class="metric-grid">
-        ${latestSleep.sleepDuration ? `<div class="metric-tile"><div class="metric-val">${latestSleep.sleepDuration}h</div><div class="metric-name">Sleep</div><div class="metric-sub">target 8h</div></div>` : ''}
-        ${latestSleep.sleepQuality  ? `<div class="metric-tile"><div class="metric-val">${latestSleep.sleepQuality}</div><div class="metric-name">Quality</div><div class="metric-sub">/ 100</div></div>` : ''}
-        ${latestSleep.recovery      ? `<div class="metric-tile"><div class="metric-val">${latestSleep.recovery}</div><div class="metric-name">Recovery</div><div class="metric-sub">/ 100</div></div>` : ''}
-        ${latestSleep.feelRating    ? `<div class="metric-tile"><div class="metric-val">${latestSleep.feelRating}<span style="font-size:0.75rem;font-weight:400">/10</span></div><div class="metric-name">Feel</div></div>` : ''}
+  document.getElementById('dash-summary').innerHTML = `
+    <div class="card" style="padding:2px 16px;margin-bottom:16px">
+      <div class="dash-row" onclick="renderProgressScreen();show('screen-progress')">
+        <span class="dash-row-lbl">Baselines</span>
+        <span class="dash-row-val" style="color:${baseline ? 'var(--text)' : 'var(--muted)'}">${blVal}</span>
+        <span class="dash-row-arrow">›</span>
       </div>
-      ${buildRecoveryBadge(latestSleep)}
-    </div>` : `
-    <div class="section-head" style="padding:0;margin-top:16px;margin-bottom:10px">
-      <h3>Sleep & Recovery</h3>
+      <div class="dash-row" onclick="renderProgressScreen();show('screen-progress')">
+        <span class="dash-row-lbl">Body</span>
+        <span class="dash-row-val" style="color:${bodyColor}">${bodyVal}</span>
+        <span class="dash-row-arrow">›</span>
+      </div>
+      <div class="dash-row" onclick="openSleepLog()">
+        <span class="dash-row-lbl">Sleep</span>
+        <span class="dash-row-val" style="color:${sleepColor}">${sleepVal}</span>
+        <span class="dash-row-arrow">›</span>
+      </div>
     </div>
-    <div class="card" style="text-align:center;padding:20px">
-      <div style="font-size:2.2rem;margin-bottom:8px">😴</div>
-      <p style="margin-bottom:14px">Track your sleep — the AI uses this to dial workouts up or down based on your recovery.</p>
-      <button class="btn btn-primary btn-sm" style="max-width:240px;margin:0 auto" onclick="openSleepLog()">Log First Night</button>
-    </div>`;
-  document.getElementById('dash-sleep').innerHTML = sleepDashHtml;
+  `;
 
   document.getElementById('dash-calendar').innerHTML = buildCalendarHtml(DB.getWorkouts(), _calYear, _calMonth);
 };
@@ -1580,6 +1540,9 @@ const renderProgressScreen = () => {
     { id: 'lift1RM',    cfg: BENCHMARKS.lift1RM,
       points: mergePoints(getBaselineHistory('estimated1RM'), getWorkout1RMHistory()),
       benchVal: bw * BENCHMARKS.lift1RM.bwMultiplier },
+    { id: 'bodyweight', cfg: BENCHMARKS.bodyweight,
+      points: getBodyweightHistory(),
+      benchVal: (BENCHMARKS.bodyweight.targetLo + BENCHMARKS.bodyweight.targetHi) / 2 },
   ];
 
   const tileFn = (m, wide = false, tileClass = 'prog-tile', expandFn = 'expandMetricChart', selectedId = _progSelected) => {
@@ -2910,10 +2873,10 @@ const buildApp = () => `
       <div class="logo">PIT <span>ROAD</span></div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn btn-primary btn-sm btn-inline" onclick="openTrainScreen()"
-                style="font-size:0.8rem;padding:9px 16px;min-height:auto">⚡ Train</button>
+                style="font-size:0.8rem;padding:9px 18px;min-height:44px">⚡ Train</button>
         <button onclick="openPrefs()" title="Preferences"
-                style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.18);border-radius:10px;padding:0;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;width:38px;height:38px;flex-shrink:0;-webkit-tap-highlight-color:transparent">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.18);border-radius:10px;padding:0;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;width:44px;height:44px;flex-shrink:0;-webkit-tap-highlight-color:transparent;touch-action:manipulation">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"/>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
@@ -2923,12 +2886,7 @@ const buildApp = () => `
     <div class="pad">
       <div id="dash-today"></div>
       <div id="dash-stats"></div>
-      <div id="dash-streak"></div>
-      <div class="divider"></div>
-      <div id="dash-metrics"></div>
-      <div id="dash-body"></div>
-      <div id="dash-sleep"></div>
-      <div class="divider"></div>
+      <div id="dash-summary"></div>
       <div id="dash-calendar"></div>
     </div>
   </div>

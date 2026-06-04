@@ -1204,6 +1204,44 @@ textarea { min-height: 90px; resize: vertical; font-size: 0.95rem; line-height: 
   font-size: 0.84rem; color: var(--text); line-height: 1.65;
 }
 
+/* ── Dashboard summary rows ─────────────────────────────────────── */
+.dash-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: opacity 0.12s;
+}
+.dash-row + .dash-row { border-top: 1px solid rgba(255,255,255,0.07); }
+.dash-row:active { opacity: 0.6; }
+.dash-row-lbl {
+  font-size: 0.58rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  min-width: 64px;
+  flex-shrink: 0;
+}
+.dash-row-val {
+  flex: 1;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-row-arrow {
+  color: rgba(255,255,255,0.25);
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  font-weight: 300;
+}
+
 /* ── Sleep & Recovery ───────────────────────────────────────────── */
 .feel-num-grid {
   display: grid;
