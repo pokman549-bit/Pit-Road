@@ -1,0 +1,13 @@
+# API key and secrets — NEVER commit these
+.env
+.env.local
+
+# Node dependencies — Render installs these automatically
+node_modules/
+
+# Claude Code internal workspace — not needed for deployment
+.claude/
+
+# OS junk
+.DS_Store
+Thumbs.db
