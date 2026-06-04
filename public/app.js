@@ -3035,7 +3035,33 @@ const expandSleepChart = (id, skipScroll = false) => {
 let _nutriDate     = today();
 let _nutriEntry    = null;
 let _nutriMode     = 'manual';
-let _nutriFormData = { name:'', servingSize:'1 serving', servings:1, calories:'', protein:'', carbs:'', fat:'', fiber:'', sodium:'', note:'' };
+let _nutriFormData = { name:'', servingSize:'1 serving', servings:1, calories:'', protein:'', carbs:'', fat:'', fiber:'', sodium:'', note:'', meal:'' };
+
+// Meal category constants
+const MEAL_ORDER = ['breakfast','lunch','dinner','snack'];
+const MEAL_META  = {
+  breakfast: { label:'Breakfast', icon:'🌅' },
+  lunch:     { label:'Lunch',     icon:'☀️'  },
+  dinner:    { label:'Dinner',    icon:'🌙' },
+  snack:     { label:'Snack',     icon:'🍎' },
+};
+
+// Smart meal suggestion: time-of-day + what's already logged today
+const suggestMealCategory = () => {
+  const h       = new Date().getHours();
+  const entries = DB.getNutriDay(_nutriDate);
+  const logged  = new Set(entries.map(e => e.meal).filter(Boolean));
+
+  // If it's late morning and nothing logged yet, start with breakfast
+  if (h >= 9 && h < 14 && !logged.has('breakfast') && !logged.has('lunch')) return 'breakfast';
+
+  // Standard time buckets
+  if (h >= 5  && h < 11) return 'breakfast';
+  if (h >= 11 && h < 15) return 'lunch';
+  if (h >= 15 && h < 18) return 'snack';
+  if (h >= 18 && h < 22) return 'dinner';
+  return 'snack'; // late night
+};
 let _nutriReviewScope   = null;
 let _nutriReviewEntryId = null;
 let _nutriReviewResult  = null;
@@ -3072,7 +3098,8 @@ const renderNutritionScreen = () => {
     </div>`;
   };
 
-  const entriesHtml = entries.length ? entries.map(e => {
+  // Build a single entry row (reused across meal sections)
+  const entryRowHtml = (e) => {
     const cal  = Math.round((e.perServing.calories || 0) * e.servings);
     const pro  = +((e.perServing.protein || 0) * e.servings).toFixed(1);
     const carb = +((e.perServing.carbs   || 0) * e.servings).toFixed(1);
@@ -3090,7 +3117,50 @@ const renderNutritionScreen = () => {
         <div class="nutr-entry-macros">${pro}P · ${carb}C · ${fat}F</div>
       </div>
     </div>`;
-  }).join('') : `<div class="empty" style="padding:20px 0"><div class="empty-icon">🍽️</div><p>No food logged yet.</p></div>`;
+  };
+
+  // Group entries by meal; uncategorized goes to 'other'
+  const grouped  = { breakfast:[], lunch:[], dinner:[], snack:[], other:[] };
+  entries.forEach(e => {
+    const key = MEAL_META[e.meal] ? e.meal : 'other';
+    grouped[key].push(e);
+  });
+
+  // Build grouped sections
+  const mealSectionsHtml = MEAL_ORDER.map(meal => {
+    const group = grouped[meal];
+    const meta  = MEAL_META[meal];
+    const mTots = group.length ? nutriTotals(group) : null;
+    return `
+      <div class="meal-section">
+        <div class="meal-section-head">
+          <span class="meal-section-title">${meta.icon} ${meta.label}</span>
+          <div style="display:flex;align-items:center;gap:10px">
+            ${mTots ? `<span class="meal-section-cal">${mTots.calories} cal</span>` : ''}
+            <button class="meal-add-btn" onclick="openNutritionAdd(null,'${meal}')">+ Add</button>
+          </div>
+        </div>
+        ${group.length ? `<div style="padding:0 0 4px">${group.map(entryRowHtml).join('')}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  // Uncategorized entries (existing data logged before categories existed)
+  const uncatHtml = grouped.other.length ? `
+    <div class="meal-section">
+      <div class="meal-section-head">
+        <span class="meal-section-title">📋 Other</span>
+        <button class="meal-add-btn" onclick="openNutritionAdd()">+ Add</button>
+      </div>
+      <div style="padding:0 0 4px">${grouped.other.map(entryRowHtml).join('')}</div>
+    </div>` : '';
+
+  const hasAnyEntries = entries.length > 0;
+  const entriesHtml = `
+    <div class="meal-sections-wrap">
+      ${mealSectionsHtml}
+      ${uncatHtml}
+      ${!hasAnyEntries ? `<div class="empty" style="padding:20px 0;text-align:center"><div class="empty-icon">🍽️</div><p>Tap any "+ Add" to log your first meal.</p></div>` : ''}
+    </div>`;
 
   document.getElementById('nutr-content').innerHTML = `
     <div class="nutr-date-nav">
@@ -3111,9 +3181,8 @@ const renderNutritionScreen = () => {
     </div>
     <div class="section-head" style="padding:0;margin:14px 0 8px">
       <h3>Food Log</h3>
-      <button class="btn btn-primary btn-sm btn-inline" onclick="openNutritionAdd(null)" style="padding:7px 14px;font-size:0.8rem;min-height:auto">+ Add</button>
     </div>
-    <div class="card" style="padding:0 16px">${entriesHtml}</div>
+    ${entriesHtml}
 
     <div class="card mt12" style="padding:14px 16px">
       <div style="font-size:0.82rem;font-weight:700;color:var(--text);margin-bottom:4px">AI Fuel Review</div>
@@ -3161,7 +3230,7 @@ const nutriDateNav = (delta) => {
   renderNutritionScreen();
 };
 
-const openNutritionAdd = (entryId = null) => {
+const openNutritionAdd = (entryId = null, presetMeal = null) => {
   _nutriEntry = entryId;
   if (entryId) {
     const e = DB.getNutriDay(_nutriDate).find(x => x.id === entryId);
@@ -3170,15 +3239,23 @@ const openNutritionAdd = (entryId = null) => {
       _nutriFormData = { name:e.name, servingSize:e.servingSize, servings:e.servings,
         calories:e.perServing.calories||'', protein:e.perServing.protein||'',
         carbs:e.perServing.carbs||'', fat:e.perServing.fat||'',
-        fiber:e.perServing.fiber||'', sodium:e.perServing.sodium||'', note:e.note||'' };
+        fiber:e.perServing.fiber||'', sodium:e.perServing.sodium||'', note:e.note||'',
+        meal: e.meal || '' };
     }
   } else {
     _nutriMode = 'manual';
-    _nutriFormData = { name:'', servingSize:'1 serving', servings:1, calories:'', protein:'', carbs:'', fat:'', fiber:'', sodium:'', note:'' };
+    _nutriFormData = { name:'', servingSize:'1 serving', servings:1, calories:'', protein:'', carbs:'', fat:'', fiber:'', sodium:'', note:'',
+      meal: presetMeal || suggestMealCategory() };
   }
   renderNutritionAdd();
   document.getElementById('nutr-add-title').textContent = entryId ? 'Edit Food' : 'Add Food';
   show('screen-nutr-add');
+};
+
+const selectMeal = (meal) => {
+  _nutriFormData.meal = meal;
+  document.querySelectorAll('.meal-cat-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.meal === meal));
 };
 
 const selectNutrMode = (mode) => {
@@ -3216,6 +3293,16 @@ const renderNutritionAdd = () => {
           <input type="file" accept="image/*" capture="environment" style="display:none" onchange="doPhotoEstimate(this)">
         </label>
         <div id="photo-status" style="margin-top:8px;font-size:0.78rem;color:var(--muted)"></div>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:12px">
+      <label>Meal</label>
+      <div class="meal-cat-grid">
+        ${MEAL_ORDER.map(m => `
+          <button class="meal-cat-btn${fd.meal === m ? ' active' : ''}" data-meal="${m}"
+                  onclick="selectMeal('${m}')" type="button">
+            ${MEAL_META[m].icon} ${MEAL_META[m].label}
+          </button>`).join('')}
       </div>
     </div>
     <div class="form-group">
@@ -3274,12 +3361,13 @@ const saveNutritionEntry = () => {
   const size = document.getElementById('nf-size')?.value.trim() || '1 serving';
   const srv  = Math.max(0.1, get('nf-servings') || 1);
   const perServing = { calories:get('nf-cal'), protein:get('nf-pro'), carbs:get('nf-carb'), fat:get('nf-fat'), fiber:get('nf-fiber'), sodium:get('nf-sod') };
+  const meal    = _nutriFormData.meal || suggestMealCategory();
   const entries = DB.getNutriDay(_nutriDate);
   if (_nutriEntry) {
     const i = entries.findIndex(e => e.id === _nutriEntry);
-    if (i >= 0) entries[i] = { ...entries[i], name, perServing, servingSize:size, servings:srv };
+    if (i >= 0) entries[i] = { ...entries[i], name, perServing, servingSize:size, servings:srv, meal };
   } else {
-    entries.push({ id:uid(), name, perServing, servingSize:size, servings:srv, source:_nutriMode,
+    entries.push({ id:uid(), name, perServing, servingSize:size, servings:srv, meal, source:_nutriMode,
       note:_nutriMode==='estimate'?'⚠️ AI photo estimate — values are approximate':'' });
   }
   DB.saveNutriDay(_nutriDate, entries);
@@ -3411,16 +3499,29 @@ Calories: ${Math.round((p.calories||0)*s)} | Protein: ${+((p.protein||0)*s).toFi
 
   if (_nutriReviewScope === 'day') {
     const tot = nutriTotals(entries);
-    const list = entries.map(e => {
-      const s = e.servings, p = e.perServing;
-      return `  • ${e.name} (${s}× ${e.servingSize}): ${Math.round((p.calories||0)*s)} cal, ${+((p.protein||0)*s).toFixed(1)}g P, ${Math.round((p.sodium||0)*s)}mg Na`;
-    }).join('\n');
+    // Group by meal for context-aware review
+    const mealGroups = { breakfast:[], lunch:[], dinner:[], snack:[], other:[] };
+    entries.forEach(e => {
+      const key = MEAL_META[e.meal] ? e.meal : 'other';
+      mealGroups[key].push(e);
+    });
+    const mealLines = [...MEAL_ORDER, 'other'].map(meal => {
+      const grp = mealGroups[meal];
+      if (!grp.length) return null;
+      const label = MEAL_META[meal]?.label || 'Other';
+      const items = grp.map(e => {
+        const s = e.servings, p = e.perServing;
+        return `    • ${e.name}: ${Math.round((p.calories||0)*s)} cal, ${+((p.protein||0)*s).toFixed(1)}g P`;
+      }).join('\n');
+      const mTot = nutriTotals(grp);
+      return `  ${label} (${mTot.calories} cal | ${mTot.protein}g P):\n${items}`;
+    }).filter(Boolean).join('\n');
     return `DAY REVIEW REQUEST — ${fmtDate(_nutriDate)}
 Totals: ${tot.calories} cal | ${tot.protein}g protein | ${tot.carbs}g carbs | ${tot.fat}g fat | ${tot.fiber}g fiber | ${tot.sodium}mg sodium
 Targets: ~${targets.calories} cal | ~${targets.protein}g protein | ~${targets.sodium}mg sodium
 
-Foods logged:
-${list || '(nothing logged)'}`;
+Meals logged:
+${mealLines || '(nothing logged)'}`;
   }
 
   if (_nutriReviewScope === 'week') {

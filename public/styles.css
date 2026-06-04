@@ -1170,6 +1170,45 @@ textarea { min-height: 90px; resize: vertical; font-size: 0.95rem; line-height: 
 .nutr-badge.estimate { background: rgba(255,193,7,0.2); color: #ffc107; border: 1px solid rgba(255,193,7,0.3); }
 .nutr-badge.label    { background: rgba(30,159,255,0.15); color: var(--red); border: 1px solid rgba(30,159,255,0.3); }
 
+/* ── Meal category sections (food log grouped view) ─────────────── */
+.meal-sections-wrap { margin-bottom: 4px; }
+.meal-section { margin-bottom: 4px; }
+.meal-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px 6px;
+}
+.meal-section-title {
+  font-size: 0.72rem; font-weight: 800; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--muted);
+}
+.meal-section-cal {
+  font-size: 0.7rem; color: var(--muted); font-weight: 600;
+}
+.meal-add-btn {
+  background: none; border: 1px solid rgba(255,255,255,0.18); border-radius: 6px;
+  color: var(--red); font-size: 0.72rem; font-weight: 700; padding: 4px 10px;
+  cursor: pointer; font-family: inherit; -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.meal-add-btn:active { background: rgba(30,159,255,0.1); }
+.nutr-entry-row { padding: 11px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.nutr-entry-row:last-child { border-bottom: none; }
+
+/* ── Meal category picker (add form) ────────────────────────────── */
+.meal-cat-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 6px;
+}
+.meal-cat-btn {
+  padding: 10px 8px; border: 1.5px solid var(--border); border-radius: 8px;
+  background: var(--surface2); color: var(--muted); font-size: 0.82rem; font-weight: 600;
+  cursor: pointer; font-family: inherit; text-align: center;
+  -webkit-tap-highlight-color: transparent; touch-action: manipulation; transition: all 0.15s;
+}
+.meal-cat-btn.active {
+  border-color: var(--red); color: var(--text); background: rgba(30,159,255,0.12);
+}
+.meal-cat-btn:active { opacity: 0.7; }
+
 .nutr-mode-row { display: flex; gap: 6px; margin-bottom: 14px; }
 .nutr-mode-btn {
   flex: 1; padding: 9px 4px; border: 1px solid var(--border); border-radius: var(--radius);
