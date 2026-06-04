@@ -1516,7 +1516,7 @@ const buildWorkoutPrompt = (gym, energy, duration) => {
 
   return `You are a pit crew strength coach. Generate a workout as JSON only.
 
-ATHLETE: 6'0"~260lb${bwNote}, former football+swimmer, rebuilding for NASCAR pit crew.
+${buildSharedAthleteContext()}
 GOALS: Fueler (core/rotation/grip) + Jackman (explosive hips/jumping/pressing).${buildPrefsContext('training')}
 
 PHASE & SESSION:
@@ -1759,6 +1759,69 @@ const logGeneratedWorkout = () => {
 // FEATURE 3 — AI COACH CHAT
 // ================================================================
 
+// ================================================================
+// SHARED ATHLETE CONTEXT — injected into every AI prompt
+// ================================================================
+const buildSharedAthleteContext = () => {
+  const workouts   = DB.getWorkouts();
+  const phase      = determinePhase(workouts);
+  const wtx        = getWeeklyTrainingContext();
+  const bw         = getCurrentWeight();
+  const deload     = isDeloadWeek(workouts);
+  const phaseNames = { 1: 'Rebuild Base', 2: 'Build Power & Speed', 3: 'Sharpen' };
+
+  // Recovery line (today or yesterday only)
+  const sleepLog = DB.getLatestSleepLog();
+  const sleepAge = sleepLog ? daysSince(sleepLog.date) : 99;
+  let recovLine  = 'No recent sleep data logged.';
+  if (sleepLog && sleepAge <= 1) {
+    const p = [];
+    if (sleepLog.sleepDuration) p.push(`${sleepLog.sleepDuration}h sleep`);
+    if (sleepLog.sleepQuality)  p.push(`quality ${sleepLog.sleepQuality}/100`);
+    if (sleepLog.recovery)      p.push(`recovery ${sleepLog.recovery}%`);
+    if (sleepLog.feelRating)    p.push(`feels ${sleepLog.feelRating}/10`);
+    const level = calcRecoveryLevel(sleepLog) || 'unknown';
+    const levelNote = {
+      poor:      '→ POOR — high fatigue, protect the athlete',
+      moderate:  '→ MODERATE — standard day',
+      good:      '→ GOOD — ready to work',
+      excellent: '→ EXCELLENT — prime performance day',
+    }[level] || '';
+    recovLine = `${p.join(', ')} ${levelNote}`;
+  }
+
+  // Body composition (most recent log)
+  const bl = DB.getLatestBodyLog();
+  const bodyLine = bl
+    ? [
+        `${bl.weight}lb`,
+        bl.bodyFat    ? `${bl.bodyFat}% body fat`     : null,
+        bl.muscleMass ? `${bl.muscleMass}lb muscle`   : null,
+        bl.visceralFat ? `visceral fat ${bl.visceralFat}` : null,
+      ].filter(Boolean).join(', ') + ` (logged ${fmtDate(bl.date)})`
+    : 'No body composition logged yet.';
+
+  // Baseline performance (most recent test)
+  const baseline = DB.getLatestBaseline();
+  const blLine   = baseline
+    ? `Sprint ${baseline.sprint || '—'}s (elite <1.9s) | Agility ${baseline.agility || '—'}s (elite <4.7s) | Broad Jump ${baseline.jumpFt != null ? `${baseline.jumpFt}'${baseline.jumpIn || 0}"` : '—'} (elite 8'6"+) | Est 1RM ${baseline.estimated1RM || '—'}lb (target ${Math.round(bw * 2)}lb = 2×BW) | Tested ${fmtDate(baseline.date)}`
+    : 'No baseline tests recorded yet.';
+
+  // 7-day nutrition average
+  const nutriLine = buildNutritionSummaryForCoach();
+
+  // Weekly training summary
+  const weekLine = `Phase ${phase} — ${phaseNames[phase] || 'Training'}${deload ? ' | ⚡ DELOAD WEEK' : ''} | ${wtx.sessionsThisWeek}/${wtx.effectiveTarget} sessions this week${wtx.trackDaysThisWeek > 0 ? ` | ${wtx.trackDaysThisWeek} track/travel day(s)` : ''}${wtx.restDaysThisWeek > 0 ? ` | ${wtx.restDaysThisWeek} rest day(s)` : ''}`;
+
+  return `ATHLETE PROFILE:
+Physical: ${bw}lb | 6'0" | former football + swimmer | NASCAR pit crew trainee (fueler + jackman roles)
+Training: ${weekLine}
+Recovery: ${recovLine}
+Body comp: ${bodyLine}
+Baselines: ${blLine}
+Nutrition avg (7-day): ${nutriLine}`;
+};
+
 // Build compact baseline performance summary for coach prompt
 const buildBaselineSummaryForCoach = () => {
   const b = DB.getLatestBaseline();
@@ -1830,25 +1893,13 @@ const buildCoachSystem = () => {
 
   return `You are a pit crew strength coach. Be direct and practical — no fluff.
 
-ATHLETE: 6'0" ${getCurrentWeight()}lb current, former football+swimmer, rebuilding fitness.
-GOAL: NASCAR pit crew — fueler (core/rotation/grip) and jackman (explosive hips/jumping/pressing).
-TRAINING PHASE: ${phase} (${wtx.target} sessions/week required)${isDeloadWeek(workouts) ? '\n⚡ DELOAD WEEK — programmed recovery week. If athlete asks about training, reinforce that lighter loads this week is the plan, not a setback. Deloads are what make the next block stronger.' : ''}
+${buildSharedAthleteContext()}
 TODAY'S GYM: ${gym} | Equipment: ${equip}
 TODAY'S WORKOUT: ${todayStr}
 
-WEEKLY TRAINING LOAD:
-- Sessions this week: ${wtx.sessionsThisWeek} of ${wtx.effectiveTarget} required${wtx.trackDaysThisWeek > 0 ? ` (base ${wtx.target}, reduced for track days)` : ''}
-- Rest days logged: ${wtx.restDaysThisWeek} | Track/travel days: ${wtx.trackDaysThisWeek}
-${trackNote ? `- ${trackNote}` : ''}- ${restDayGuidance}
-
-PERFORMANCE BASELINES:
-${buildBaselineSummaryForCoach()}
-
-BODY COMPOSITION (recent):
-${buildBodyCompSummaryForCoach()}
-
-NUTRITION (recent avg vs targets):
-${buildNutritionSummaryForCoach()}
+WEEKLY LOAD DETAIL:
+- Sessions: ${wtx.sessionsThisWeek}/${wtx.effectiveTarget} required${wtx.trackDaysThisWeek > 0 ? ` (base ${wtx.target}, reduced — ${wtx.trackDaysThisWeek} track day(s))` : ''}
+${trackNote ? `- ${trackNote}\n` : ''}- ${restDayGuidance}${isDeloadWeek(workouts) ? '\n- ⚡ DELOAD WEEK — reinforce that lighter loads this week is the plan, not a setback.' : ''}
 
 PERFORMANCE DATA (exercise trends + load directives):
 ${history}
@@ -3317,30 +3368,30 @@ const setNutrReviewEntry = (id) => {
 };
 
 const buildNutritionReviewSystem = () => {
-  const bw    = DB.getLatestBaseline()?.bodyweight || 260;
-  const phase = determinePhase(DB.getWorkouts());
+  const wtx   = getWeeklyTrainingContext();
+  const deload = wtx.deload;
   return `You are a supportive sports fueling advisor reviewing nutrition data for a hard-training athlete.
 
-ATHLETE: ~${bw} lbs, training for NASCAR pit crew (jackman/fueler) — focus on power, speed, explosiveness. Currently in training Phase ${phase}.
+${buildSharedAthleteContext()}
 
-YOUR JOB: Give BRIEF, SUPPORTIVE performance-focused feedback on the nutrition data provided.
+YOUR JOB: Give BRIEF, SUPPORTIVE, performance-focused feedback on the nutrition data provided. Use the athlete's full profile above to make feedback specific and relevant.
 
-WHAT TO HIGHLIGHT (as relevant):
-- Protein adequacy for muscle repair (athletes often benefit from ~0.7–1g per lb of bodyweight)
-- Carbohydrate fueling for intense training
-- Sodium/electrolyte intake — hard-training athletes can need 3000–5000mg/day due to sweat losses, this is important for performance and hydration
-- Overall energy — is the athlete fueling enough for their training demands?
-- Any clear wins or easy opportunities
+WHAT TO CONSIDER:
+- Protein adequacy for muscle repair relative to training load (~0.7–1g per lb of bodyweight for hard-training athletes)
+- Carbohydrate fueling — ${deload ? 'deload week means lower training stress; carb needs may be slightly reduced but recovery nutrition still matters' : 'hard training weeks need adequate carbs for performance and glycogen replenishment'}
+- Sodium/electrolyte intake — hard-training athletes can need 3000–5000mg/day; flag if chronically low
+- Overall energy intake — is the athlete fueling enough for their current training phase and recovery level?
+- Recovery connection — if recovery data shows poor sleep or low recovery score, nutrition plays a direct role
+- ${wtx.sessionsThisWeek >= wtx.effectiveTarget ? 'High training week — recovery nutrition is extra important right now' : `${wtx.sessionsThisWeek}/${wtx.effectiveTarget} sessions done — fueling for upcoming training is the priority`}
 
 TONE: Encouraging, brief, practical. Frame everything as fueling for PERFORMANCE, not weight or appearance.
-
-FORMAT: 3–5 short sentences or a few bullet points. Use **bold** for key points. One practical takeaway at the end if relevant.
+FORMAT: 3–5 short sentences or a few bullet points. Use **bold** for key points. One concrete takeaway at the end.
 
 HARD RULES:
 - Do NOT suggest eating less, cutting calories, or restricting food
 - Do NOT give a score, grade, or rating
 - Do NOT make clinical nutrition claims
-- For any weight or body-composition questions: say "work with a Registered Sports Dietitian (RD) for personalized guidance" and move on
+- For any weight/body-comp question: say "work with a Registered Sports Dietitian (RD) for personalized guidance"
 - This is general educational information, not medical/dietary advice${buildPrefsContext('nutrition')}`;
 };
 
@@ -3416,12 +3467,35 @@ const runNutritionReview = async () => {
 };
 
 const buildNutritionChatSystem = () => {
-  const bw = DB.getLatestBaseline()?.bodyweight || 260;
-  return `You are a supportive sports fueling advisor for a serious athlete (~${bw} lbs) training to become a NASCAR over-the-wall pit crew member, focused on power, speed, and explosiveness.
-ROLE: Give practical, evidence-based sports nutrition guidance centered on PERFORMANCE and RECOVERY. Adequate fueling is the priority.
-MUST: Focus on fueling for training (protein timing, carb fueling, hydration, recovery nutrition). Be supportive. Keep responses concise.
-MUST NOT: Set strict calorie limits, encourage restriction, or provide clinical dietary advice.
-For any weight/body-comp question always add: "For personalized nutrition or body composition goals, work with a Registered Sports Dietitian (RD) or your physician."${buildPrefsContext('nutrition')}`;
+  const wtx   = getWeeklyTrainingContext();
+  const deload = wtx.deload;
+  // Recent training load summary for context (compact, no full exercise analysis)
+  const recentWorkouts = DB.getWorkouts().slice(-4).reverse();
+  const trainingLoad   = recentWorkouts.length
+    ? recentWorkouts.map(w => {
+        const ago = daysSince(w.date);
+        const tag = w.sessionType ? `Ph${w.phase}-${w.sessionType}` : 'manual';
+        return `${ago}d ago [${tag}]`;
+      }).join(', ')
+    : 'No recent sessions logged.';
+
+  return `You are a supportive sports fueling advisor for a hard-training athlete. Be conversational, practical, and performance-focused.
+
+${buildSharedAthleteContext()}
+Recent training sessions: ${trainingLoad}${deload ? '\nThis is a DELOAD WEEK — reduced training stress, recovery nutrition is the priority.' : ''}
+
+YOUR ROLE: Give practical, evidence-based sports nutrition guidance centered on PERFORMANCE and RECOVERY. Use the athlete's actual data above to make your answers specific — reference their actual weight, training phase, recovery status, and logged nutrition when relevant. Don't give generic advice when you have real data to work with.
+
+FOCUS AREAS: Pre/post-workout nutrition, protein timing and targets, carb fueling for different session types, hydration and electrolytes (especially sodium for heavy sweat loss), recovery nutrition, travel/racetrack fueling.
+
+RESPONSE STYLE: Direct, supportive, 2-4 sentences per answer unless more detail is needed. Reference the athlete's actual data when it's relevant (e.g. "your 7-day protein average is X — here's how to hit your target").
+
+HARD RULES:
+- Do NOT suggest eating less, cutting calories, or restricting intake
+- Do NOT give a score, grade, or rating on the athlete's habits
+- Do NOT make clinical claims or diagnose conditions
+- For personalized plans or body-comp goals: "Work with a Registered Sports Dietitian (RD) — I can give general guidance but they'll give you the real plan."
+- This is general educational information, not medical/dietary advice${buildPrefsContext('nutrition')}`;
 };
 
 const openNutritionChat = () => {
