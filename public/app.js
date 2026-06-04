@@ -63,6 +63,9 @@ const DB = {
     DB._w('workouts', DB.getWorkouts().filter(w => w.id !== id));
   },
 
+  snoozeRetest:  ()  => DB._w('retest_snooze', today()),
+  getRetestSnooze: () => DB._r('retest_snooze') || null,
+
   getRestDays:   ()  => DB._r('restdays') || [],
   addRestDay:    (d) => {
     const a = DB.getRestDays();
@@ -313,6 +316,65 @@ const buildRestDayCardHtml = () => {
 };
 
 // ================================================================
+// BASELINE RETEST REMINDER
+// ================================================================
+const shouldShowRetestReminder = () => {
+  const latest = DB.getLatestBaseline();
+  if (!latest) return { show: false }; // no baseline yet — wizard handles first-time
+
+  // Respect snooze (7 days)
+  const snoozed = DB.getRetestSnooze();
+  if (snoozed && daysSince(snoozed) < 7) return { show: false };
+
+  const workouts     = DB.getWorkouts();
+  const currentPhase = determinePhase(workouts);
+
+  // Phase transition: only fires when latest baseline has an explicit phase stored
+  // and the user has since moved to a higher phase
+  if (latest.phase !== undefined && currentPhase > latest.phase) {
+    return {
+      show: true,
+      reason: `You've moved into Phase ${currentPhase}! Re-test your sprint, jumps, agility, and lift to see exactly how much you've gained.`,
+      urgent: true,
+    };
+  }
+
+  // Time-based: every 4 weeks (28 days)
+  const age = daysSince(latest.date);
+  if (age >= 28) {
+    const weeks = Math.floor(age / 7);
+    return {
+      show: true,
+      reason: `It's been ${weeks} week${weeks !== 1 ? 's' : ''} since your last baseline test. Time to measure your progress and keep those charts honest.`,
+      urgent: false,
+    };
+  }
+
+  return { show: false };
+};
+
+const snoozeRetestReminder = () => {
+  DB.snoozeRetest();
+  renderDashboard();
+};
+
+const buildRetestBannerHtml = ({ reason, urgent }) => `
+  <div class="card mb12" style="border-color:rgba(255,215,0,${urgent ? '0.45' : '0.25'});background:rgba(255,215,0,0.05)">
+    <div style="display:flex;align-items:flex-start;gap:12px">
+      <div style="font-size:1.5rem;flex-shrink:0">📏</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:0.6rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold);margin-bottom:4px">Baseline Retest Due</div>
+        <div style="font-size:0.83rem;font-weight:600;color:var(--text);line-height:1.4">${reason}</div>
+      </div>
+    </div>
+    <div class="btn-row mt10">
+      <button class="btn btn-ghost btn-sm" style="opacity:0.55" onclick="snoozeRetestReminder()">Remind Me Later</button>
+      <button class="btn btn-primary btn-sm" onclick="wizardStart()">Run Tests Now 📏</button>
+    </div>
+  </div>
+`;
+
+// ================================================================
 // MILESTONE CELEBRATIONS
 // ================================================================
 const showMilestone = (lines) => {
@@ -429,6 +491,7 @@ const wizardSave = () => {
   const newBaseline  = Object.assign({}, _bdata, {
     id: uid(), date: today(),
     estimated1RM: epley1RM(_bdata.liftWeight, _bdata.liftReps),
+    phase: determinePhase(DB.getWorkouts()),  // track phase so transition reminders work
   });
   DB.addBaseline(newBaseline);
   DB.completeSetup();
@@ -533,8 +596,12 @@ const renderDashboard = () => {
     }
   }
 
+  // Retest reminder banner — shown above stat pills when due
+  const retestCheck = shouldShowRetestReminder();
+  const retestBanner = retestCheck.show ? buildRetestBannerHtml(retestCheck) : '';
+
   // Stat pills — streak inline so no separate card needed
-  document.getElementById('dash-stats').innerHTML = `
+  document.getElementById('dash-stats').innerHTML = retestBanner + `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
       <div class="stat-pill">🔥 <span class="pill-val">${streakCur}</span> streak${streakBest > 0 ? `<span style="color:var(--muted);font-weight:400"> / ${streakBest} best</span>` : ''}</div>
       <div class="stat-pill">Phase <span class="pill-val">${phase}</span></div>
@@ -2254,7 +2321,9 @@ const _renderProgressScreen = () => {
     </div>
     ${tileFn(_progMetrics[4], true)}
     <div id="prog-chart-box"></div>
-    <button class="btn btn-ghost btn-sm mt12" onclick="wizardStart()">+ Add Baseline Test</button>
+    ${shouldShowRetestReminder().show
+      ? `<button class="btn btn-primary btn-sm mt12" onclick="wizardStart()" style="background:rgba(255,215,0,0.15);border-color:rgba(255,215,0,0.4);color:var(--gold)">📏 Retest Due — Run Baseline Tests</button>`
+      : `<button class="btn btn-ghost btn-sm mt12" onclick="wizardStart()">+ Add Baseline Test</button>`}
     ${bodySection}
     ${sleepSection}
     ${exerciseSection}
