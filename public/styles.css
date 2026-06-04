@@ -1353,10 +1353,13 @@ textarea { min-height: 90px; resize: vertical; font-size: 0.95rem; line-height: 
 .nutr-dot    { background: var(--green); }
 .sleep-dot   { background: var(--gold); }
 .rest-dot    { background: rgba(255,255,255,0.3); }
+.track-dot   { background: #ff9500; }
 .has-data { cursor: pointer; opacity: 0.85; }
 .has-data:active { opacity: 0.6; }
 .cal-day.has-rest { cursor: pointer; opacity: 0.75; }
 .cal-day.has-rest:active { opacity: 0.5; }
+.cal-day.has-track { cursor: pointer; opacity: 0.9; }
+.cal-day.has-track:active { opacity: 0.6; }
 
 /* ── Unified Day View ───────────────────────────────────────────── */
 .day-section-head {

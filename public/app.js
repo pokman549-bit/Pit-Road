@@ -70,6 +70,14 @@ const DB = {
   },
   removeRestDay: (d) => DB._w('restdays', DB.getRestDays().filter(x => x !== d)),
 
+  getTrackDays:   ()        => DB._r('trackdays') || [],
+  addTrackDay:    (d, note) => {
+    const a = DB.getTrackDays();
+    if (!a.find(t => t.date === d)) { a.push({ date: d, note: note || '' }); DB._w('trackdays', a); }
+  },
+  removeTrackDay: (d)       => DB._w('trackdays', DB.getTrackDays().filter(t => t.date !== d)),
+  getTrackDay:    (d)       => DB.getTrackDays().find(t => t.date === d) || null,
+
   getNutriDay:      (date)    => DB._r('nutriday_' + date) || [],
   saveNutriDay:     (date, e) => DB._w('nutriday_' + date, e),
   getNutriTargets:  ()        => DB._r('nutri_targets') || { calories: 3500, protein: 220, carbs: 450, fat: 100, fiber: 40, sodium: 3500 },
@@ -122,9 +130,13 @@ const daysSince = (dateStr) => {
   return Math.floor((Date.now() - new Date(dateStr + 'T12:00:00').getTime()) / 86400000);
 };
 
-const calcStreak = (workouts, restDays = []) => {
-  // Active dates = workouts + intentional rest days (both keep streak alive)
-  const active = new Set([...workouts.map(w => w.date), ...restDays]);
+const calcStreak = (workouts, restDays = [], trackDays = []) => {
+  // Active dates = workouts + rest days + track/travel days (all keep streak alive)
+  const active = new Set([
+    ...workouts.map(w => w.date),
+    ...restDays,
+    ...trackDays.map(t => t.date),
+  ]);
   if (!active.size) return { current: 0, longest: 0 };
   const sorted = [...active].sort();
   let longest = 1, run = 1;
@@ -222,6 +234,60 @@ const cancelRestDay = (dateStr) => {
   // If day view is open for this date, refresh it
   const detailEl = document.getElementById('screen-detail');
   if (detailEl && detailEl.classList.contains('active')) openDayView(dateStr);
+};
+
+// ================================================================
+// TRACK / TRAVEL DAY LOGGING
+// ================================================================
+const logTrackDay = () => {
+  const todayStr = today();
+  if (DB.getWorkouts().some(w => w.date === todayStr)) {
+    toast('You already logged a workout today', 'err');
+    return;
+  }
+  const note = prompt('Race weekend, travel, or event? (optional — tap Cancel to skip)') || '';
+  DB.addTrackDay(todayStr, note.trim());
+  toast('Track/travel day logged — streak protected 🏁', 'ok');
+  renderDashboard();
+};
+
+const logTrackDayForDate = (dateStr) => {
+  const note = prompt('Race weekend, travel, or event? (optional)') || '';
+  DB.addTrackDay(dateStr, note.trim());
+  toast('Track day logged 🏁', 'ok');
+  openDayView(dateStr);
+  renderDashboard();
+};
+
+const cancelTrackDay = (dateStr) => {
+  DB.removeTrackDay(dateStr);
+  toast('Track day removed', 'ok');
+  renderDashboard();
+  const detailEl = document.getElementById('screen-detail');
+  if (detailEl && detailEl.classList.contains('active')) openDayView(dateStr);
+};
+
+const buildTrackDayCardHtml = () => {
+  const track   = DB.getTrackDay(today());
+  const note    = track?.note || 'Race weekend / travel';
+  const wtx     = getWeeklyTrainingContext();
+  const subtext = wtx.trackDaysThisWeek > 0
+    ? `Session target adjusted to ${wtx.effectiveTarget}/week · streak protected`
+    : 'Streak protected';
+  return `
+    <div class="card today-card" style="margin-bottom:8px;border-color:rgba(255,149,0,0.25)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div class="today-session-tag" style="color:#ff9500">TRACK / TRAVEL · TODAY</div>
+          <div class="today-session-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${note}</div>
+          <div style="font-size:0.78rem;font-weight:600;color:#ff9500;margin-top:6px">${subtext}</div>
+        </div>
+        <div style="font-size:1.6rem;flex-shrink:0">🏁</div>
+      </div>
+    </div>
+    <button class="btn btn-ghost btn-sm" style="width:100%;margin-bottom:12px;font-size:0.8rem;opacity:0.55"
+            onclick="cancelTrackDay('${today()}')">✕ Remove track day</button>
+  `;
 };
 
 const buildRestDayCardHtml = () => {
@@ -421,27 +487,37 @@ const renderDashboard = () => {
   const baseline  = DB.getLatestBaseline();
   const workouts  = DB.getWorkouts().slice().reverse();
   const lastOut   = workouts[0];
-  const phase     = determinePhase(DB.getWorkouts());
-  const restDays  = DB.getRestDays();
-  const { current: streakCur, longest: streakBest } = calcStreak(DB.getWorkouts(), restDays);
+  const phase      = determinePhase(DB.getWorkouts());
+  const restDays   = DB.getRestDays();
+  const trackDays  = DB.getTrackDays();
+  const { current: streakCur, longest: streakBest } = calcStreak(DB.getWorkouts(), restDays, trackDays);
 
-  // Today card — show rest-day state if logged, or add "Log Rest Day" button if not
+  // Today card — show appropriate state based on what's logged today
   const todayEl = document.getElementById('dash-today');
   if (todayEl) {
-    const hasWorkoutToday = DB.getWorkouts().some(w => w.date === today());
-    const hasRestToday    = restDays.includes(today());
-    if (hasRestToday && !hasWorkoutToday) {
+    const todayStr        = today();
+    const hasWorkoutToday = DB.getWorkouts().some(w => w.date === todayStr);
+    const hasRestToday    = restDays.includes(todayStr);
+    const hasTrackToday   = !!DB.getTrackDay(todayStr);
+
+    if (hasTrackToday && !hasWorkoutToday) {
+      todayEl.innerHTML = buildTrackDayCardHtml();
+    } else if (hasRestToday && !hasWorkoutToday) {
       todayEl.innerHTML = buildRestDayCardHtml();
     } else {
       let todayHtml = buildTodayCardHtml();
       if (!hasWorkoutToday) {
-        const wtx   = getWeeklyTrainingContext();
-        const label = wtx.weekTargetMet
-          ? `🛌 Log as Rest Day · ${wtx.sessionsThisWeek}/${wtx.target} sessions done`
-          : `🛌 Log as Rest Day · ${wtx.sessionsThisWeek}/${wtx.target} sessions this week`;
-        todayHtml += `<button class="btn btn-ghost btn-sm"
-          style="width:100%;margin-bottom:12px;font-size:0.82rem;opacity:0.6;touch-action:manipulation"
-          onclick="logRestDay()">${label}</button>`;
+        const wtx        = getWeeklyTrainingContext();
+        const restLabel  = wtx.weekTargetMet
+          ? `🛌 Rest Day · ${wtx.sessionsThisWeek}/${wtx.effectiveTarget} sessions done`
+          : `🛌 Rest Day · ${wtx.sessionsThisWeek}/${wtx.effectiveTarget} this week`;
+        todayHtml += `
+          <div style="display:flex;gap:8px;margin-bottom:12px">
+            <button class="btn btn-ghost btn-sm" style="flex:1;font-size:0.78rem;opacity:0.6;touch-action:manipulation"
+                    onclick="logRestDay()">${restLabel}</button>
+            <button class="btn btn-ghost btn-sm" style="flex:1;font-size:0.78rem;opacity:0.6;touch-action:manipulation"
+                    onclick="logTrackDay()">🏁 Track / Travel</button>
+          </div>`;
       }
       todayEl.innerHTML = todayHtml;
     }
@@ -927,6 +1003,21 @@ const openDayView = (dateStr) => {
       </div>`;
   }
 
+  // ── Track / Travel day section ──
+  const trackEntry = DB.getTrackDay(dateStr);
+  if (trackEntry) {
+    html += `
+      <div class="day-section-head" style="color:#ff9500">🏁 Track / Travel Day</div>
+      <div class="card mb12" style="border-color:rgba(255,149,0,0.2);display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:0.9rem;font-weight:700;color:#ff9500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${trackEntry.note || 'Race weekend / travel'}</div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-top:3px">Session target adjusted · streak protected</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" style="font-size:0.75rem;opacity:0.6;flex-shrink:0"
+                onclick="cancelTrackDay('${dateStr}')">Remove</button>
+      </div>`;
+  }
+
   // ── Rest day section ──
   const isRestDay = DB.getRestDays().includes(dateStr);
   if (isRestDay) {
@@ -937,13 +1028,21 @@ const openDayView = (dateStr) => {
         <button class="btn btn-ghost btn-sm" style="font-size:0.75rem;opacity:0.6;flex-shrink:0;margin-left:12px"
                 onclick="cancelRestDay('${dateStr}')">Remove</button>
       </div>`;
-  } else if (!w) {
-    // Only show "Log Rest Day" option on past days that have no workout
+  }
+
+  // ── Log options for past days with no workout ──
+  if (!w && !trackEntry && !isRestDay) {
     const isPast = dateStr < today();
     if (isPast) {
-      html += `<button class="btn btn-ghost btn-sm" style="width:100%;margin-top:8px;opacity:0.6"
-        onclick="DB.addRestDay('${dateStr}');toast('Rest day logged 🛌','ok');openDayView('${dateStr}');renderDashboard()">
-        🛌 Mark as Rest Day</button>`;
+      html += `
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn btn-ghost btn-sm" style="flex:1;opacity:0.6"
+            onclick="DB.addRestDay('${dateStr}');toast('Rest day logged 🛌','ok');openDayView('${dateStr}');renderDashboard()">
+            🛌 Mark Rest Day</button>
+          <button class="btn btn-ghost btn-sm" style="flex:1;opacity:0.6"
+            onclick="logTrackDayForDate('${dateStr}')">
+            🏁 Mark Track Day</button>
+        </div>`;
     }
   }
 
@@ -960,11 +1059,12 @@ const openDayView = (dateStr) => {
 const buildStreakHtml = (current, longest) => {
   const wDates = new Set(DB.getWorkouts().map(w => w.date));
   const rDates = new Set(DB.getRestDays());
+  const tDates = new Set(DB.getTrackDays().map(t => t.date));
   let last7 = 0;
   for (let i = 0; i < 7; i++) {
     const d = new Date(); d.setDate(d.getDate() - i);
     const ds = d.toISOString().slice(0, 10);
-    if (wDates.has(ds) || rDates.has(ds)) last7++;
+    if (wDates.has(ds) || rDates.has(ds) || tDates.has(ds)) last7++;
   }
   return `
   <div class="streak-card">
@@ -1005,8 +1105,9 @@ const calNav = (delta) => {
 const buildCalendarHtml = (workouts, year, month) => {
   const workoutDates = {};
   workouts.forEach(w => { if (!workoutDates[w.date]) workoutDates[w.date] = w; });
-  const sleepDates = new Set(DB.getSleepLogs().map(s => s.date));
-  const restDates  = new Set(DB.getRestDays());
+  const sleepDates  = new Set(DB.getSleepLogs().map(s => s.date));
+  const restDates   = new Set(DB.getRestDays());
+  const trackDates  = new Set(DB.getTrackDays().map(t => t.date));
 
   const firstDay   = new Date(year, month, 1);
   const lastDate   = new Date(year, month + 1, 0).getDate();
@@ -1024,9 +1125,13 @@ const buildCalendarHtml = (workouts, year, month) => {
     const hasSleep = sleepDates.has(ds);
     const hasNutr  = DB.getNutriDay(ds).length > 0;
     const hasRest  = restDates.has(ds);
-    const hasData  = !!(w || hasSleep || hasNutr || hasRest);
+    const hasTrack = trackDates.has(ds);
+    const hasData  = !!(w || hasSleep || hasNutr || hasRest || hasTrack);
     const cls = ['cal-day',
-      w       ? 'has-workout' : hasRest ? 'has-rest' : (hasData ? 'has-data' : ''),
+      w        ? 'has-workout' :
+      hasTrack ? 'has-track'   :
+      hasRest  ? 'has-rest'    :
+      hasData  ? 'has-data'    : '',
       ds === todayStr ? 'cal-today' : '',
     ].filter(Boolean).join(' ');
     const dots = [
@@ -1034,6 +1139,7 @@ const buildCalendarHtml = (workouts, year, month) => {
       hasNutr  ? '<div class="cal-dot nutr-dot"></div>'    : '',
       hasSleep ? '<div class="cal-dot sleep-dot"></div>'   : '',
       hasRest  ? '<div class="cal-dot rest-dot"></div>'    : '',
+      hasTrack ? '<div class="cal-dot track-dot"></div>'   : '',
     ].join('');
     cells += `<div class="${cls}"${hasData ? ` onclick="openDayView('${ds}')"` : ''}>${d}${dots ? `<div class="cal-dots">${dots}</div>` : ''}</div>`;
   }
@@ -1100,17 +1206,23 @@ const getWeeklyTrainingContext = () => {
   weekStart.setHours(0, 0, 0, 0);
   const weekStartStr = weekStart.toISOString().slice(0, 10);
 
-  const weekWorkouts = workouts.filter(w => w.date >= weekStartStr);
-  const weekRestDays = DB.getRestDays().filter(d => d >= weekStartStr);
+  const weekWorkouts  = workouts.filter(w => w.date >= weekStartStr);
+  const weekRestDays  = DB.getRestDays().filter(d => d >= weekStartStr);
+  const weekTrackDays = DB.getTrackDays().filter(t => t.date >= weekStartStr);
 
   const sessionsThisWeek  = weekWorkouts.length;
   const restDaysThisWeek  = weekRestDays.length;
-  const sessionsRemaining = Math.max(0, target - sessionsThisWeek);
-  const maxRestDays       = 7 - target; // if all sessions done, this many rest days are fine
-  const weekTargetMet     = sessionsThisWeek >= target;
+  const trackDaysThisWeek = weekTrackDays.length;
+
+  // Each track day reduces the session target (being at the track IS the job)
+  const effectiveTarget   = Math.max(1, target - trackDaysThisWeek);
+  const sessionsRemaining = Math.max(0, effectiveTarget - sessionsThisWeek);
+  const maxRestDays       = 7 - effectiveTarget;
+  const weekTargetMet     = sessionsThisWeek >= effectiveTarget;
 
   return {
-    phase, target, sessionsThisWeek, restDaysThisWeek,
+    phase, target, effectiveTarget, sessionsThisWeek,
+    restDaysThisWeek, trackDaysThisWeek,
     sessionsRemaining, maxRestDays, weekTargetMet, weekStartStr,
   };
 };
@@ -1469,9 +1581,12 @@ const buildCoachSystem = () => {
   }
 
   const wtx = getWeeklyTrainingContext();
+  const trackNote = wtx.trackDaysThisWeek > 0
+    ? `Athlete had ${wtx.trackDaysThisWeek} track/travel day(s) this week — session target reduced to ${wtx.effectiveTarget} (from base ${wtx.target}). This is race work, not laziness.`
+    : '';
   const restDayGuidance = wtx.weekTargetMet
-    ? `Weekly target met (${wtx.sessionsThisWeek}/${wtx.target} sessions done). Rest days are fully earned — up to ${wtx.maxRestDays} rest days/week is appropriate for Phase ${wtx.phase}.`
-    : `Weekly target NOT yet met (${wtx.sessionsThisWeek}/${wtx.target} sessions done, ${wtx.sessionsRemaining} still needed). If athlete asks about taking a rest day, encourage them to train first unless sleep/recovery data indicates genuine need. Be supportive, not harsh.`;
+    ? `Weekly target met (${wtx.sessionsThisWeek}/${wtx.effectiveTarget} sessions done). Rest days fully earned.`
+    : `Weekly target not yet met (${wtx.sessionsThisWeek}/${wtx.effectiveTarget} sessions done, ${wtx.sessionsRemaining} still needed). Encourage training first unless recovery data says otherwise. Be supportive, not harsh.`;
 
   return `You are a pit crew strength coach. Be direct and practical — no fluff.
 
@@ -1482,9 +1597,9 @@ TODAY'S GYM: ${gym} | Equipment: ${equip}
 TODAY'S WORKOUT: ${todayStr}
 
 WEEKLY TRAINING LOAD:
-- Sessions this week: ${wtx.sessionsThisWeek} of ${wtx.target} required
-- Rest days logged this week: ${wtx.restDaysThisWeek} of ${wtx.maxRestDays} max
-- ${restDayGuidance}
+- Sessions this week: ${wtx.sessionsThisWeek} of ${wtx.effectiveTarget} required${wtx.trackDaysThisWeek > 0 ? ` (base ${wtx.target}, reduced for track days)` : ''}
+- Rest days logged: ${wtx.restDaysThisWeek} | Track/travel days: ${wtx.trackDaysThisWeek}
+${trackNote ? `- ${trackNote}` : ''}- ${restDayGuidance}
 
 PERFORMANCE BASELINES:
 ${buildBaselineSummaryForCoach()}
