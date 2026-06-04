@@ -383,6 +383,7 @@ const buildTodayCardHtml = () => {
   const workouts = DB.getWorkouts();
   const phase    = determinePhase(workouts);
   const nextType = getNextSessionType(workouts, phase);
+  const deload   = isDeloadWeek(workouts);
   const typeLabels = {
     A: 'Full-Body Strength', B: 'Conditioning + Core', C: 'Lower + Movement',
     D: 'Conditioning', S: 'Strength Maintenance', P: 'Speed & Power',
@@ -400,13 +401,22 @@ const buildTodayCardHtml = () => {
       ? `<div style="font-size:0.78rem;color:var(--muted);margin-top:6px">${sleepFallback}</div>`
       : '';
 
+  const deloadBadge = deload
+    ? `<div style="display:inline-block;font-size:0.6rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;background:rgba(255,215,0,0.15);color:var(--gold);border:1px solid rgba(255,215,0,0.3);border-radius:4px;padding:2px 6px;margin-top:6px">⚡ Deload Week — lighter loads, full recovery</div>`
+    : '';
+
+  const tagText = deload
+    ? `PH${phase}-${nextType} &middot; DELOAD`
+    : `PH${phase}-${nextType} &middot; UP NEXT`;
+
   return `
     <div class="card today-card" onclick="openTrainScreen()"
          style="cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
         <div style="flex:1;min-width:0">
-          <div class="today-session-tag">PH${phase}-${nextType} &middot; UP NEXT</div>
-          <div class="today-session-name">${sessionLabel}</div>
+          <div class="today-session-tag">${tagText}</div>
+          <div class="today-session-name">${deload ? 'Deload — ' + sessionLabel : sessionLabel}</div>
+          ${deloadBadge}
           ${recoveryHtml}
         </div>
         <div style="color:var(--red);font-size:1.6rem;font-weight:200;flex-shrink:0;opacity:0.8">›</div>
@@ -1178,6 +1188,17 @@ const determinePhase = (workouts) => {
   return 3;
 };
 
+// Returns true if the current calendar week is a programmed deload week.
+// Deload fires on Phase 2 week 4 (and every 4 weeks after, if Phase 2 extends).
+const isDeloadWeek = (workouts) => {
+  if (!workouts.length) return false;
+  const phase = determinePhase(workouts);
+  if (phase !== 2) return false;
+  const weeksIn   = (Date.now() - new Date(workouts[0].date + 'T12:00:00').getTime()) / (7 * 24 * 3600 * 1000);
+  const ph2Week   = Math.floor(weeksIn - 4); // 0-indexed weeks since entering Phase 2
+  return ph2Week >= 3 && ph2Week % 4 === 3;  // week 4, 8, 12 … of Phase 2
+};
+
 // Pick the next session type by rotating through the phase's sequence
 const getNextSessionType = (workouts, phase) => {
   const lastTyped = [...workouts].reverse().find(w => w.sessionType);
@@ -1220,10 +1241,13 @@ const getWeeklyTrainingContext = () => {
   const maxRestDays       = 7 - effectiveTarget;
   const weekTargetMet     = sessionsThisWeek >= effectiveTarget;
 
+  const deload = isDeloadWeek(workouts);
+
   return {
     phase, target, effectiveTarget, sessionsThisWeek,
     restDaysThisWeek, trackDaysThisWeek,
     sessionsRemaining, maxRestDays, weekTargetMet, weekStartStr,
+    deload,
   };
 };
 
@@ -1268,12 +1292,12 @@ const buildPrefsContext = (scope = 'all') => {
 
 // Build the full prompt sent to Claude
 const buildWorkoutPrompt = (gym, energy, duration) => {
-  const workouts = DB.getWorkouts();
-  const phase    = determinePhase(workouts);
-  const nextType = getNextSessionType(workouts, phase);
-  const history  = formatHistoryForPrompt(workouts);
+  const workouts  = DB.getWorkouts();
+  const phase     = determinePhase(workouts);
+  const nextType  = getNextSessionType(workouts, phase);
+  const deload    = isDeloadWeek(workouts);
+  const history   = formatHistoryForPrompt(workouts);
   const equipment = GYM_EQUIPMENT[gym] || GYM_EQUIPMENT['Other'];
-  const baseline  = DB.getLatestBaseline();
   const bwNote    = `, bodyweight ${getCurrentWeight()}lb`;
 
   const phaseDesc = {
@@ -1294,6 +1318,18 @@ const buildWorkoutPrompt = (gym, energy, duration) => {
     '3P': 'Speed sharpening — sprint quality, agility, jumps, mock pit-crew movements, ALL full recovery',
   }[`${phase}${nextType}`] || 'Design an appropriate session for this phase.';
 
+  const deloadBlock = deload ? `
+
+⚠ DELOAD WEEK — MANDATORY (non-negotiable):
+- Reduce ALL weights 40-50% from the athlete's recent working weights shown in history
+- Drop 1 set per exercise (4→3 sets, 3→2 sets)
+- Keep the same movement patterns as the session type above
+- NO max effort, NO speed/plyometric work, NO new PRs
+- Reps can increase slightly (e.g. 5-rep sets become 8-10 reps at lighter load)
+- Athlete should finish feeling loose and refreshed, NOT fatigued
+- Title must include "Deload" (e.g. "Deload Lower", "Deload Conditioning")
+- coachNote must explain this is a planned recovery week that makes the next block stronger` : '';
+
   return `You are a pit crew strength coach. Generate a workout as JSON only.
 
 ATHLETE: 6'0"~260lb${bwNote}, former football+swimmer, rebuilding.
@@ -1306,7 +1342,7 @@ RULE SET (non-negotiable):
 - ONLY use equipment available at gym
 
 ${phaseDesc}
-SESSION TYPE ${nextType}: ${typeGuide}
+SESSION TYPE ${nextType}: ${typeGuide}${deloadBlock}
 
 TODAY: Gym=${gym} | Equipment: ${equipment} | Energy=${energy} | Time=${duration}min${getRecoveryContext()}
 
@@ -1592,7 +1628,7 @@ const buildCoachSystem = () => {
 
 ATHLETE: 6'0" ${getCurrentWeight()}lb current, former football+swimmer, rebuilding fitness.
 GOAL: NASCAR pit crew — fueler (core/rotation/grip) and jackman (explosive hips/jumping/pressing).
-TRAINING PHASE: ${phase} (${wtx.target} sessions/week required)
+TRAINING PHASE: ${phase} (${wtx.target} sessions/week required)${isDeloadWeek(workouts) ? '\n⚡ DELOAD WEEK — programmed recovery week. If athlete asks about training, reinforce that lighter loads this week is the plan, not a setback. Deloads are what make the next block stronger.' : ''}
 TODAY'S GYM: ${gym} | Equipment: ${equip}
 TODAY'S WORKOUT: ${todayStr}
 
