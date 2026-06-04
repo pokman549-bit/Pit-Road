@@ -206,7 +206,12 @@ const logRestDay = () => {
     return;
   }
   DB.addRestDay(todayStr);
-  toast('Rest day logged — streak protected 🛌', 'ok');
+  const wtx = getWeeklyTrainingContext();
+  if (!wtx.weekTargetMet) {
+    toast(`Rest day logged — but you still need ${wtx.sessionsRemaining} session${wtx.sessionsRemaining > 1 ? 's' : ''} this week 💪`, 'ok');
+  } else {
+    toast('Rest day logged — fully earned. Recover well 🛌', 'ok');
+  }
   renderDashboard();
 };
 
@@ -219,20 +224,27 @@ const cancelRestDay = (dateStr) => {
   if (detailEl && detailEl.classList.contains('active')) openDayView(dateStr);
 };
 
-const buildRestDayCardHtml = () => `
-  <div class="card today-card" style="margin-bottom:8px;border-color:rgba(255,255,255,0.12)">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-      <div style="flex:1;min-width:0">
-        <div class="today-session-tag" style="color:var(--muted)">REST DAY · TODAY</div>
-        <div class="today-session-name">Recovery logged ✓</div>
-        <div style="font-size:0.78rem;color:var(--muted);margin-top:6px">Streak protected — come back strong</div>
+const buildRestDayCardHtml = () => {
+  const wtx     = getWeeklyTrainingContext();
+  const subtext = wtx.weekTargetMet
+    ? `Streak protected · ${wtx.sessionsThisWeek}/${wtx.target} sessions done ✓`
+    : `${wtx.sessionsThisWeek}/${wtx.target} sessions this week — ${wtx.sessionsRemaining} still needed`;
+  const subColor = wtx.weekTargetMet ? 'var(--green)' : 'var(--gold)';
+  return `
+    <div class="card today-card" style="margin-bottom:8px;border-color:rgba(255,255,255,0.12)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div class="today-session-tag" style="color:var(--muted)">REST DAY · TODAY</div>
+          <div class="today-session-name">Recovery logged ✓</div>
+          <div style="font-size:0.78rem;font-weight:600;color:${subColor};margin-top:6px">${subtext}</div>
+        </div>
+        <div style="font-size:1.6rem;flex-shrink:0">🛌</div>
       </div>
-      <div style="font-size:1.6rem;flex-shrink:0">🛌</div>
     </div>
-  </div>
-  <button class="btn btn-ghost btn-sm" style="width:100%;margin-bottom:12px;font-size:0.8rem;opacity:0.55"
-          onclick="cancelRestDay('${today()}')">✕ Remove rest day</button>
-`;
+    <button class="btn btn-ghost btn-sm" style="width:100%;margin-bottom:12px;font-size:0.8rem;opacity:0.55"
+            onclick="cancelRestDay('${today()}')">✕ Remove rest day</button>
+  `;
+};
 
 // ================================================================
 // MILESTONE CELEBRATIONS
@@ -423,9 +435,13 @@ const renderDashboard = () => {
     } else {
       let todayHtml = buildTodayCardHtml();
       if (!hasWorkoutToday) {
+        const wtx   = getWeeklyTrainingContext();
+        const label = wtx.weekTargetMet
+          ? `🛌 Log as Rest Day · ${wtx.sessionsThisWeek}/${wtx.target} sessions done`
+          : `🛌 Log as Rest Day · ${wtx.sessionsThisWeek}/${wtx.target} sessions this week`;
         todayHtml += `<button class="btn btn-ghost btn-sm"
           style="width:100%;margin-bottom:12px;font-size:0.82rem;opacity:0.6;touch-action:manipulation"
-          onclick="logRestDay()">🛌 Log as Rest Day</button>`;
+          onclick="logRestDay()">${label}</button>`;
       }
       todayEl.innerHTML = todayHtml;
     }
@@ -1066,6 +1082,39 @@ const getNextSessionType = (workouts, phase) => {
   return types[(types.indexOf(last) + 1) % types.length];
 };
 
+// Returns weekly training load context — used by coach, rest-day UI, and workout prompt
+const getWeeklyTrainingContext = () => {
+  const workouts = DB.getWorkouts();
+  const phase    = determinePhase(workouts);
+
+  // Sessions required per week for each phase
+  const targetMap = { 1: 3, 2: 4, 3: 2 };
+  const target    = targetMap[phase] || 3;
+
+  // Monday of the current week
+  const now  = new Date();
+  const dow  = now.getDay(); // 0 = Sunday
+  const diff = dow === 0 ? -6 : 1 - dow;
+  const weekStart = new Date(now);
+  weekStart.setDate(weekStart.getDate() + diff);
+  weekStart.setHours(0, 0, 0, 0);
+  const weekStartStr = weekStart.toISOString().slice(0, 10);
+
+  const weekWorkouts = workouts.filter(w => w.date >= weekStartStr);
+  const weekRestDays = DB.getRestDays().filter(d => d >= weekStartStr);
+
+  const sessionsThisWeek  = weekWorkouts.length;
+  const restDaysThisWeek  = weekRestDays.length;
+  const sessionsRemaining = Math.max(0, target - sessionsThisWeek);
+  const maxRestDays       = 7 - target; // if all sessions done, this many rest days are fine
+  const weekTargetMet     = sessionsThisWeek >= target;
+
+  return {
+    phase, target, sessionsThisWeek, restDaysThisWeek,
+    sessionsRemaining, maxRestDays, weekTargetMet, weekStartStr,
+  };
+};
+
 // Build a compact training history string for the prompt
 const formatHistoryForPrompt = (workouts) => {
   const recent = workouts.slice(-5).reverse();
@@ -1419,13 +1468,23 @@ const buildCoachSystem = () => {
     todayStr = `${_currentGenerated.title} (Phase ${_currentGenerated.phase}, Session ${_currentGenerated.sessionType}): ${exList}`;
   }
 
+  const wtx = getWeeklyTrainingContext();
+  const restDayGuidance = wtx.weekTargetMet
+    ? `Weekly target met (${wtx.sessionsThisWeek}/${wtx.target} sessions done). Rest days are fully earned — up to ${wtx.maxRestDays} rest days/week is appropriate for Phase ${wtx.phase}.`
+    : `Weekly target NOT yet met (${wtx.sessionsThisWeek}/${wtx.target} sessions done, ${wtx.sessionsRemaining} still needed). If athlete asks about taking a rest day, encourage them to train first unless sleep/recovery data indicates genuine need. Be supportive, not harsh.`;
+
   return `You are a pit crew strength coach. Be direct and practical — no fluff.
 
 ATHLETE: 6'0" ${getCurrentWeight()}lb current, former football+swimmer, rebuilding fitness.
 GOAL: NASCAR pit crew — fueler (core/rotation/grip) and jackman (explosive hips/jumping/pressing).
-TRAINING PHASE: ${phase}
+TRAINING PHASE: ${phase} (${wtx.target} sessions/week required)
 TODAY'S GYM: ${gym} | Equipment: ${equip}
 TODAY'S WORKOUT: ${todayStr}
+
+WEEKLY TRAINING LOAD:
+- Sessions this week: ${wtx.sessionsThisWeek} of ${wtx.target} required
+- Rest days logged this week: ${wtx.restDaysThisWeek} of ${wtx.maxRestDays} max
+- ${restDayGuidance}
 
 PERFORMANCE BASELINES:
 ${buildBaselineSummaryForCoach()}
