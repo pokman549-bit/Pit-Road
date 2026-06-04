@@ -302,6 +302,7 @@ const buildTodayCardHtml = () => {
         </div>
       </div>
     </div>`;
+};
 
 const wizardSave = () => {
   const prevBaseline = DB.getLatestBaseline();
