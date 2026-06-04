@@ -1318,7 +1318,7 @@ const getWeeklyTrainingContext = () => {
   };
 };
 
-// Build a compact training history string for the prompt
+// Build a compact training history string for the prompt (used by coach chat)
 const formatHistoryForPrompt = (workouts) => {
   const recent = workouts.slice(-5).reverse();
   if (!recent.length) return 'No previous sessions logged.';
@@ -1332,6 +1332,111 @@ const formatHistoryForPrompt = (workouts) => {
     }).join(', ');
     return `${ago}d ago [${tag}]: ${exes || 'no exercises'}`;
   }).join('\n');
+};
+
+// ── Per-exercise trend analysis for AI auto-regulation ─────────────
+// Scans last 8 sessions, groups by exercise, detects trend, issues LOAD DIRECTIVES.
+// This is the primary data feed for workout generation — replaces flat history.
+const buildPerformanceAnalysis = () => {
+  const workouts = DB.getWorkouts();
+  if (!workouts.length) return 'No previous sessions logged.';
+
+  // Collect per-exercise history across last 8 sessions
+  const recent8 = workouts.slice(-8);
+  const exMap   = {}; // name → [{date, ago, numSets, topWeight, topReps, best1RM, hasWeight}]
+
+  recent8.forEach(w => {
+    (w.exercises || []).forEach(ex => {
+      const name = (ex.name || '').trim();
+      if (!name) return;
+      const sets = (ex.sets || []).filter(s => (parseInt(s.reps) || 0) > 0);
+      if (!sets.length) return;
+
+      const weightedSets = sets.filter(s => (parseFloat(s.weight) || 0) > 0);
+      const topSet = weightedSets.length
+        ? weightedSets.reduce((b, s) =>
+            epley1RM(parseFloat(s.weight), parseInt(s.reps)) >
+            epley1RM(parseFloat(b.weight), parseInt(b.reps)) ? s : b,
+            weightedSets[0])
+        : null;
+
+      if (!exMap[name]) exMap[name] = [];
+      exMap[name].push({
+        date:      w.date,
+        ago:       daysSince(w.date),
+        numSets:   sets.length,
+        topWeight: topSet ? parseFloat(topSet.weight) : 0,
+        topReps:   topSet ? parseInt(topSet.reps) : Math.max(...sets.map(s => parseInt(s.reps) || 0)),
+        best1RM:   topSet ? epley1RM(parseFloat(topSet.weight), parseInt(topSet.reps)) : 0,
+        hasWeight: !!topSet,
+      });
+    });
+  });
+
+  // Build analysis for exercises with 2+ appearances
+  const analyses = Object.entries(exMap)
+    .filter(([, h]) => h.length >= 2)
+    .sort((a, b) => b[1][b[1].length - 1].date.localeCompare(a[1][a[1].length - 1].date))
+    .slice(0, 10)
+    .map(([name, hist]) => {
+      const last3 = hist.slice(-3);
+      const last  = last3[last3.length - 1];
+      const prev  = last3[last3.length - 2];
+
+      let trend = '';
+      let directive = '';
+
+      if (last.hasWeight && prev.hasWeight) {
+        const dW = last.topWeight - prev.topWeight;
+        const dR = last.topReps  - prev.topReps;
+
+        if (dW > 0 && dR >= 0) {
+          trend     = 'PROGRESSING';
+          directive = `Keep momentum. Next: ${Math.round(last.topWeight + 5)}–${Math.round(last.topWeight + 10)}lb`;
+        } else if (dW === 0 && dR > 0) {
+          trend     = 'READY TO PROGRESS';
+          directive = `Reps improving at ${last.topWeight}lb. Step up → ${Math.round(last.topWeight + 5)}lb`;
+        } else if (dW === 0 && dR === 0) {
+          trend     = 'HOLDING STEADY';
+          directive = `Consistent ${last.topWeight}lb × ${last.topReps}. Add 2.5–5lb if all reps completed cleanly`;
+        } else if (dW === 0 && dR < 0) {
+          trend     = 'STALLING';
+          directive = `Reps dropped (${prev.topReps}→${last.topReps}) at ${last.topWeight}lb. Hold weight, cue form, add a set instead`;
+        } else { // dW < 0
+          trend     = 'WEIGHT PULLED BACK';
+          directive = `Reduced to ${last.topWeight}lb. Rebuild reps here before adding load`;
+        }
+      } else {
+        // Reps-only exercise
+        const dR = last.topReps - prev.topReps;
+        if (dR > 0)      { trend = 'PROGRESSING'; directive = `Max reps up. Keep pushing or add load.`; }
+        else if (dR < 0) { trend = 'DECLINING';   directive = `Reps dropped. Check fatigue / recovery.`; }
+        else             { trend = 'HOLDING';      directive = `Consistent. Try harder variation or add reps.`; }
+      }
+
+      const lines = last3.map(h => {
+        const rm  = h.best1RM > 0 ? ` (est.${h.best1RM}lb 1RM)` : '';
+        const val = h.hasWeight
+          ? `${h.numSets}×${h.topReps}@${h.topWeight}lb${rm}`
+          : `${h.numSets}×${h.topReps} reps`;
+        return `  ${h.ago}d ago: ${val}`;
+      }).join('\n');
+
+      return `${name} [${trend}]:\n${lines}\n  → ${directive}`;
+    });
+
+  // Also prepend recent session summary so AI knows what types were done
+  const sessionSummary = workouts.slice(-4).reverse().map(w => {
+    const ago = daysSince(w.date);
+    const tag = w.sessionType ? `Ph${w.phase}-${w.sessionType}` : 'manual';
+    return `${ago}d ago [${tag}] ${w.gym ? '@ ' + w.gym : ''}`;
+  }).join(' | ');
+
+  const analysisText = analyses.length
+    ? analyses.join('\n\n')
+    : 'Not enough repeated exercises yet — start conservative and build.';
+
+  return `Recent sessions: ${sessionSummary}\n\nPer-exercise analysis:\n${analysisText}`;
 };
 
 // ── Preferences context injected into every AI prompt ────────────
@@ -1363,19 +1468,20 @@ const buildWorkoutPrompt = (gym, energy, duration) => {
   const phase     = determinePhase(workouts);
   const nextType  = getNextSessionType(workouts, phase);
   const deload    = isDeloadWeek(workouts);
-  const history   = formatHistoryForPrompt(workouts);
+  const wtx       = getWeeklyTrainingContext();
+  const perfData  = buildPerformanceAnalysis();
   const equipment = GYM_EQUIPMENT[gym] || GYM_EQUIPMENT['Other'];
   const bwNote    = `, bodyweight ${getCurrentWeight()}lb`;
 
   const phaseDesc = {
-    1: 'PHASE 1 — Rebuild Base: moderate strength + conditioning, NO heavy explosive work, protect lower back, athlete is detrained so start conservative with weights',
-    2: 'PHASE 2 — Build Power & Speed: explosive work now OK, progressive overload, full recovery on all speed work',
-    3: 'PHASE 3 — Sharpen: cut volume, peak intensity, add mock pit-movement reps, athlete should arrive to competition fresh',
+    1: 'PHASE 1 — Rebuild Base: moderate strength + conditioning, NO heavy explosive work, protect lower back, start conservative',
+    2: 'PHASE 2 — Build Power & Speed: explosive work OK, progressive overload every session, full recovery on speed work',
+    3: 'PHASE 3 — Sharpen: cut volume, peak intensity, mock pit-movement reps, athlete arrives to competition fresh',
   }[phase];
 
   const typeGuide = {
     '1A': 'Full-body strength — goblet squat or leg press 3×10-12, DB RDL 3×10, DB bench or machine press 3×10-12, cable/machine row 3×12, plank 3×30-45s, back extensions 3×12',
-    '1B': 'Conditioning + core — bike/row intervals 20s hard/40s easy ×8-10 (swim OK), farmer carries 3×30-40yd, Pallof press 3×10/side, hanging knee raises 3×12',
+    '1B': 'Conditioning + core — bike/row intervals 20s hard/40s easy ×8-10, farmer carries 3×30-40yd, Pallof press 3×10/side, hanging knee raises 3×12',
     '1C': 'Lower strength + movement — trap-bar DL or DB deadlift 3×8, walking lunges or split squats 3×10/leg, DB overhead press 3×10, light footwork 5 min, side plank 3×20-30s/side',
     '2A': 'Max-effort lower (jackman power) — trap-bar DL heavy 3-5 explosive reps, squat 4×5, KB swings 4×12, back extensions 3×12, heavy carries 3×40yd',
     '2B': 'Speed & agility — 10-20yd sprints 6-8 reps FULL recovery, 5-10-5 shuttle ×4-6, lateral shuffles 4×20yd, box/broad jumps 4×4, med-ball rotational throws 3×6/side',
@@ -1385,43 +1491,69 @@ const buildWorkoutPrompt = (gym, energy, duration) => {
     '3P': 'Speed sharpening — sprint quality, agility, jumps, mock pit-crew movements, ALL full recovery',
   }[`${phase}${nextType}`] || 'Design an appropriate session for this phase.';
 
+  // Energy-level load rule
+  const energyRule = {
+    low:    'ENERGY LOW — reduce suggested weights 10-15%, skip PR attempts, prioritize movement quality over load',
+    medium: 'ENERGY MEDIUM — proceed as planned, conservative on top sets',
+    high:   'ENERGY HIGH — push load targets, good day for PRs on main lifts',
+  }[energy] || '';
+
+  // Weekly context note
+  const weekNote = wtx.trackDaysThisWeek > 0
+    ? `Week: ${wtx.sessionsThisWeek}/${wtx.effectiveTarget} sessions (${wtx.trackDaysThisWeek} track day — target reduced)`
+    : `Week: ${wtx.sessionsThisWeek}/${wtx.effectiveTarget} sessions done`;
+
   const deloadBlock = deload ? `
 
-⚠ DELOAD WEEK — MANDATORY (non-negotiable):
-- Reduce ALL weights 40-50% from the athlete's recent working weights shown in history
-- Drop 1 set per exercise (4→3 sets, 3→2 sets)
-- Keep the same movement patterns as the session type above
-- NO max effort, NO speed/plyometric work, NO new PRs
-- Reps can increase slightly (e.g. 5-rep sets become 8-10 reps at lighter load)
-- Athlete should finish feeling loose and refreshed, NOT fatigued
-- Title must include "Deload" (e.g. "Deload Lower", "Deload Conditioning")
-- coachNote must explain this is a planned recovery week that makes the next block stronger` : '';
+⚠ DELOAD WEEK — MANDATORY (overrides all load directives below):
+- Reduce ALL weights 40-50% from recent working weights
+- Drop 1 set per exercise (4→3, 3→2)
+- NO max effort, NO speed/plyometric work, NO PRs
+- Reps can increase (5-rep sets → 8-10 reps at lighter load)
+- Athlete finishes feeling refreshed, NOT fatigued
+- Title must include "Deload"
+- progressionNote must explain this is a planned recovery week` : '';
 
   return `You are a pit crew strength coach. Generate a workout as JSON only.
 
-ATHLETE: 6'0"~260lb${bwNote}, former football+swimmer, rebuilding.
-GOALS: NASCAR pit crew — fueler (core/rotation/grip) + jackman (explosive hips/jumping/pressing).${buildPrefsContext('training')}
-RULE SET (non-negotiable):
-- Include lower-back protection every session (extensions, McGill, or loaded carries)
-- Warm up before any heavy/explosive work
-- Speed/jump work = full recovery, never turn into cardio
-- Progressive overload — suggest slightly more than last logged session for same exercises
-- ONLY use equipment available at gym
+ATHLETE: 6'0"~260lb${bwNote}, former football+swimmer, rebuilding for NASCAR pit crew.
+GOALS: Fueler (core/rotation/grip) + Jackman (explosive hips/jumping/pressing).${buildPrefsContext('training')}
 
+PHASE & SESSION:
 ${phaseDesc}
-SESSION TYPE ${nextType}: ${typeGuide}${deloadBlock}
+Session Type ${nextType}: ${typeGuide}${deloadBlock}
 
-TODAY: Gym=${gym} | Equipment: ${equipment} | Energy=${energy} | Time=${duration}min${getRecoveryContext()}
+TODAY'S CONDITIONS:
+- Gym: ${gym} | Equipment: ${equipment}
+- Time available: ${duration} min
+- ${energyRule}
+- ${weekNote}${getRecoveryContext()}
 
-RECENT HISTORY (use for weight suggestions):
-${history}
+PERFORMANCE DATA — AUTO-REGULATE BASED ON THIS:
+${perfData}
+
+AUTO-REGULATION RULES (mandatory — apply to every exercise):
+1. PROGRESSING → use the suggested next load from the directive above
+2. READY TO PROGRESS → step up weight as directed
+3. HOLDING STEADY → add 2.5-5lb if athlete has been completing all reps cleanly
+4. STALLING → hold weight, adjust notes to cue technique, consider adding a set instead
+5. DECLINING / WEIGHT PULLED BACK → stay at current weight, rebuild before loading
+6. New exercise or no data → start conservative (athlete can adjust up in the moment)
+7. If BOTH energy is low AND recovery is poor → treat as an unplanned deload regardless of phase
+
+NON-NEGOTIABLE RULES:
+- Lower-back protection every session (extensions, McGill, or loaded carries)
+- Warm up before any heavy/explosive work
+- Speed/jump work = full recovery, never condense into cardio intervals
+- ONLY use equipment available at ${gym}
 
 Respond with ONLY valid JSON (no markdown, no explanation):
 {
   "sessionType": "${nextType}",
   "phase": ${phase},
   "title": "short session title",
-  "coachNote": "1-2 sentences: what to focus on and why this session today",
+  "coachNote": "1-2 sentences on the day's focus and why",
+  "progressionNote": "1-2 sentences explaining SPECIFIC load decisions made — which exercises went up/held/back and why. Be concrete: name the weights.",
   "warmup": "specific warmup for this session type",
   "exercises": [
     {"name": "Exercise Name", "sets": 3, "reps": "10-12", "weight": 45, "unit": "lbs", "rest": "60s", "notes": "key form cue or intensity note"}
@@ -1549,7 +1681,12 @@ const renderGeneratedWorkout = (w) => {
       <span class="phase-badge" style="background:rgba(255,215,0,0.1);border-color:rgba(255,215,0,0.3);color:var(--gold)">Session ${w.sessionType}</span>
     </div>
     <h2 style="margin-bottom:8px;line-height:1.2">${w.title}</h2>
-    ${w.coachNote ? `<p style="margin-bottom:20px;color:#b8b8d8;font-size:0.9rem;line-height:1.65">${w.coachNote}</p>` : ''}
+    ${w.coachNote ? `<p style="margin-bottom:${w.progressionNote ? '10px' : '20px'};color:#b8b8d8;font-size:0.9rem;line-height:1.65">${w.coachNote}</p>` : ''}
+    ${w.progressionNote ? `
+      <div style="background:rgba(30,159,255,0.08);border:1px solid rgba(30,159,255,0.2);border-radius:10px;padding:10px 14px;margin-bottom:20px">
+        <div style="font-size:0.6rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:var(--red);margin-bottom:4px">Auto-Regulation</div>
+        <div style="font-size:0.82rem;color:#b8b8d8;line-height:1.5">${w.progressionNote}</div>
+      </div>` : ''}
   `;
 
   if (w.warmup) {
@@ -1671,7 +1808,7 @@ const buildCoachSystem = () => {
   const workouts  = DB.getWorkouts();
   const phase     = determinePhase(workouts);
   const baseline  = DB.getLatestBaseline();
-  const history   = formatHistoryForPrompt(workouts);
+  const history   = buildPerformanceAnalysis();
   const gym       = _trainGym || 'unknown';
   const equip     = GYM_EQUIPMENT[gym] || 'unknown equipment';
 
@@ -1713,7 +1850,7 @@ ${buildBodyCompSummaryForCoach()}
 NUTRITION (recent avg vs targets):
 ${buildNutritionSummaryForCoach()}
 
-RECENT TRAINING HISTORY:
+PERFORMANCE DATA (exercise trends + load directives):
 ${history}
 
 NON-NEGOTIABLE RULES:
