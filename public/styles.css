@@ -1361,6 +1361,21 @@ textarea { min-height: 90px; resize: vertical; font-size: 0.95rem; line-height: 
 .cal-day.has-track { cursor: pointer; opacity: 0.9; }
 .cal-day.has-track:active { opacity: 0.6; }
 
+/* ── Per-exercise rows ──────────────────────────────────────────── */
+.ex-row {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  transition: background 0.15s;
+}
+.ex-row:last-child { border-bottom: none; }
+.ex-row:active { background: rgba(255,255,255,0.05); }
+.ex-row.selected { background: rgba(30,159,255,0.08); }
+
 /* ── Unified Day View ───────────────────────────────────────────── */
 .day-section-head {
   font-family: 'Barlow Condensed', sans-serif;

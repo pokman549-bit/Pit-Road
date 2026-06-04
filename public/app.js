@@ -1925,6 +1925,7 @@ let _progMetrics    = [];
 let _progSelected   = null;
 let _bodyMetrics    = [];
 let _bodySelected   = null;
+let _exSelected     = null;   // exercise name currently charted
 
 // Pull body log history for one field, sorted by date
 const getBLHistory = (field) =>
@@ -1932,6 +1933,120 @@ const getBLHistory = (field) =>
     .filter(b => b[field] != null && !isNaN(b[field]))
     .map(b => ({ x: b.date, y: parseFloat(b[field]), label: fmtShortDate(b.date) }))
     .sort((a, b) => a.x.localeCompare(b.x));
+
+// ================================================================
+// PER-EXERCISE PROGRESSION CHARTS
+// ================================================================
+
+// Returns all exercises logged at least once, sorted most-recent first
+const getAllExercisesWithData = () => {
+  const map = {};
+  DB.getWorkouts().forEach(w => {
+    (w.exercises || []).forEach(ex => {
+      const name = (ex.name || '').trim();
+      if (!name) return;
+      if (!map[name]) map[name] = { name, sessions: 0, lastDate: '', lastBest: 0, hasWeight: false };
+      map[name].sessions++;
+      if (w.date > map[name].lastDate) map[name].lastDate = w.date;
+      (ex.sets || []).forEach(s => {
+        const wt = parseFloat(s.weight) || 0;
+        const rp = parseInt(s.reps) || 0;
+        if (wt > 0) { map[name].hasWeight = true; }
+        const val = wt > 0 ? epley1RM(wt, rp) : rp;
+        if (val > map[name].lastBest) map[name].lastBest = val;
+      });
+    });
+  });
+  return Object.values(map)
+    .filter(e => e.sessions >= 1)
+    .sort((a, b) => b.lastDate.localeCompare(a.lastDate));
+};
+
+// Best 1RM (or max reps) per session date for one exercise
+const getExercisePoints = (name) => {
+  const byDate = {};
+  DB.getWorkouts().forEach(w => {
+    (w.exercises || []).forEach(ex => {
+      if ((ex.name || '').trim() !== name) return;
+      (ex.sets || []).forEach(s => {
+        const wt  = parseFloat(s.weight) || 0;
+        const rp  = parseInt(s.reps) || 0;
+        const val = wt > 0 ? epley1RM(wt, rp) : rp;
+        if (val > 0 && (!byDate[w.date] || val > byDate[w.date].y)) {
+          byDate[w.date] = { x: w.date, y: val, label: fmtShortDate(w.date) };
+        }
+      });
+    });
+  });
+  return Object.values(byDate).sort((a, b) => a.x.localeCompare(b.x));
+};
+
+// Returns benchmark value for exercises that match the trap-bar/deadlift pattern
+const getExerciseBenchmark = (name) => {
+  const lower = name.toLowerCase();
+  const isMainLift = ['trap-bar','trap bar','deadlift','leg press'].some(k => lower.includes(k));
+  if (!isMainLift) return null;
+  const bw = DB.getLatestBaseline()?.bodyweight || 260;
+  return bw * BENCHMARKS.lift1RM.bwMultiplier;
+};
+
+const expandExerciseChart = (name, skipScroll = false) => {
+  // Toggle off
+  if (_exSelected === name) {
+    _exSelected = null;
+    document.getElementById('prog-ex-chart-box').innerHTML = '';
+    document.querySelectorAll('.ex-row').forEach(r => r.classList.remove('selected'));
+    return;
+  }
+  _exSelected = name;
+  document.querySelectorAll('.ex-row').forEach(r =>
+    r.classList.toggle('selected', r.dataset.exname === name));
+
+  const points    = getExercisePoints(name);
+  const bench     = getExerciseBenchmark(name);
+  const hasWeight = DB.getWorkouts().some(w =>
+    (w.exercises || []).some(ex =>
+      (ex.name || '').trim() === name &&
+      (ex.sets || []).some(s => (parseFloat(s.weight) || 0) > 0)));
+
+  const last  = points.length ? points[points.length - 1] : null;
+  const prev  = points.length >= 2 ? points[points.length - 2] : null;
+  const ago   = last ? daysSince(last.x) : null;
+
+  let trendLabel = '—', trendColor = 'var(--muted)';
+  if (last && prev) {
+    if (last.y > prev.y)      { trendLabel = '↑ Improving';          trendColor = 'var(--green)'; }
+    else if (last.y < prev.y) { trendLabel = '↓ Down last session';   trendColor = 'var(--red)'; }
+    else                      { trendLabel = '→ Holding steady';       trendColor = 'var(--muted)'; }
+  }
+
+  const svgId    = 'ex_' + name.replace(/[^a-z0-9]/gi, '_');
+  const yLabel   = hasWeight ? 'Est. 1RM (lbs)' : 'Max reps';
+  const benchDesc = bench
+    ? `Target: ${Math.round(bench)}+ lbs (2× bodyweight)`
+    : `Metric: ${yLabel}`;
+
+  const box = document.getElementById('prog-ex-chart-box');
+  box.innerHTML = `
+    <div class="card mt8">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="card-label" style="margin-bottom:0">${name}</div>
+        <div style="font-size:0.78rem;font-weight:700;color:${trendColor}">${trendLabel}</div>
+      </div>
+      ${buildSvgChart(svgId, points, bench)}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <div style="display:flex;align-items:center;gap:6px">
+          ${bench ? `<span style="display:inline-block;width:16px;height:2px;background:#ffd700;opacity:0.65;flex-shrink:0"></span>` : ''}
+          <span style="font-size:0.7rem;color:var(--muted)">${benchDesc}</span>
+        </div>
+        ${ago !== null ? `<span style="font-size:0.68rem;color:var(--muted);flex-shrink:0">${ago === 0 ? 'today' : ago + 'd ago'}</span>` : ''}
+      </div>
+    </div>`;
+
+  if (!skipScroll) {
+    setTimeout(() => box?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
+  }
+};
 
 const renderProgressScreen = () => {
   try { _renderProgressScreen(); } catch(e) {
@@ -2066,6 +2181,36 @@ const _renderProgressScreen = () => {
     </div>
   `;
 
+  // ── Per-exercise section ─────────────────────────────────────────
+  const allExercises = getAllExercisesWithData();
+  const exerciseSection = allExercises.length ? (() => {
+    const rows = allExercises.map(e => {
+      const valStr  = e.hasWeight ? `${e.lastBest} lbs est. 1RM` : `${e.lastBest} reps max`;
+      const sessStr = `${e.sessions} session${e.sessions !== 1 ? 's' : ''}`;
+      const safeName = e.name.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+      return `
+        <div class="ex-row" data-exname="${safeName}"
+             onclick="expandExerciseChart(this.dataset.exname)">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:0.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.name}</div>
+            <div style="font-size:0.72rem;color:var(--muted);margin-top:2px">${valStr} · ${sessStr}</div>
+          </div>
+          <div style="color:var(--muted);font-size:1.1rem;flex-shrink:0;margin-left:8px">›</div>
+        </div>`;
+    }).join('');
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 10px">
+        <h3>Exercises</h3>
+        <span style="font-size:0.72rem;color:var(--muted)">${allExercises.length} logged</span>
+      </div>
+      <div class="card" style="padding:0">${rows}</div>
+      <div id="prog-ex-chart-box"></div>`;
+  })() : `
+    <div style="margin:20px 0 10px"><h3>Exercises</h3></div>
+    <div class="card" style="text-align:center;padding:24px">
+      <p style="color:var(--muted);font-size:0.875rem">Log workouts with exercises to see your progression charts here.</p>
+    </div>`;
+
   el.innerHTML = `
     <div class="prog-grid">
       ${tileFn(_progMetrics[0])}${tileFn(_progMetrics[1])}
@@ -2076,11 +2221,13 @@ const _renderProgressScreen = () => {
     <button class="btn btn-ghost btn-sm mt12" onclick="wizardStart()">+ Add Baseline Test</button>
     ${bodySection}
     ${sleepSection}
+    ${exerciseSection}
   `;
 
   if (_progSelected) expandMetricChart(_progSelected, true);
   if (_bodySelected) expandBodyChart(_bodySelected, true);
   if (_sleepSelected) expandSleepChart(_sleepSelected, true);
+  if (_exSelected)    expandExerciseChart(_exSelected, true);
 };
 
 const expandMetricChart = (id, skipScroll = false) => {
